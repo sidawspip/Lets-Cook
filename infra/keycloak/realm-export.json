@@ -1,0 +1,71 @@
+{
+  "realm": "lets-cook",
+  "enabled": true,
+  "displayName": "Let's Cook",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "clients": [
+    {
+      "clientId": "lets-cook-web",
+      "name": "Let's Cook Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:4200", "http://localhost:4200/*", "http://192.168.0.3:4200", "http://192.168.0.3:4200/*"],
+      "webOrigins": ["http://localhost:4200", "http://192.168.0.3:4200"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:4200/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "demo@example.com",
+      "firstName": "Demo",
+      "lastName": "User",
+      "credentials": [
+        {"type": "password", "value": "demo", "temporary": false}
+      ]
+    },
+    {
+      "username": "ankit",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "ankit@uat.local",
+      "firstName": "Ankit",
+      "lastName": "Jain",
+      "credentials": [
+        {"type": "password", "value": "Uat@123", "temporary": false}
+      ]
+    },
+    {
+      "username": "rahul",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "rahul@uat.local",
+      "firstName": "Rahul",
+      "lastName": "Sharma",
+      "credentials": [
+        {"type": "password", "value": "Uat@123", "temporary": false}
+      ]
+    },
+    {
+      "username": "priya",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "priya@uat.local",
+      "firstName": "Priya",
+      "lastName": "Rao",
+      "credentials": [
+        {"type": "password", "value": "Uat@123", "temporary": false}
+      ]
+    }
+  ]
+}

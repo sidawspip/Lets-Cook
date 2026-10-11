@@ -1,0 +1,1 @@
+ALTER TABLE rooms ADD COLUMN ephemeral BOOLEAN NOT NULL DEFAULT false;

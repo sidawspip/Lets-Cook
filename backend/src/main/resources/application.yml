@@ -1,0 +1,49 @@
+server:
+  port: 8080
+  # Respect the exact public scheme/host supplied by our Nginx reverse proxy.
+  # This makes Cloudflare requests same-origin without a broad CORS wildcard.
+  forward-headers-strategy: framework
+  error:
+    include-message: always
+
+spring:
+  application:
+    name: lets-cook-platform
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/letscook}
+    username: ${SPRING_DATASOURCE_USERNAME:letscook}
+    password: ${SPRING_DATASOURCE_PASSWORD:letscook_dev}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI:http://localhost:8180/realms/lets-cook/protocol/openid-connect/certs}
+  flyway:
+    enabled: true
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 5MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  security:
+    issuer: ${APP_SECURITY_ISSUER:http://localhost:8180/realms/lets-cook}
+  livekit:
+    url: ${APP_LIVEKIT_URL:ws://localhost:7880}
+    api-key: ${APP_LIVEKIT_API_KEY:devkey}
+    api-secret: ${APP_LIVEKIT_API_SECRET:lets-cook-dev-livekit-secret-32-chars}
+  uploads:
+    avatar-directory: ${APP_AVATAR_DIRECTORY:/app/uploads/avatars}
+  youtube:
+    api-key: ${YOUTUBE_API_KEY:}
+
