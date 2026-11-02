@@ -19,10 +19,23 @@
           },
           "configurations": {
             "production": {
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": true
+                },
+                "fonts": false
+              },
               "budgets": [
-                { "type": "initial", "maximumWarning": "750kB", "maximumError": "1MB" }
+                { "type": "initial", "maximumWarning": "1MB", "maximumError": "1150kB" }
               ],
               "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "sourceMap": true,
+              "outputHashing": "none"
             }
           },
           "defaultConfiguration": "production"
@@ -31,7 +44,7 @@
           "builder": "@angular/build:dev-server",
           "configurations": {
             "production": { "buildTarget": "lets-cook-web:build:production" },
-            "development": { "buildTarget": "lets-cook-web:build" }
+            "development": { "buildTarget": "lets-cook-web:build:development" }
           },
           "defaultConfiguration": "development"
         }

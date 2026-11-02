@@ -1,0 +1,346 @@
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../state/watch_party_controller.dart';
+import '../theme/app_theme.dart';
+import '../widgets/media_preview.dart';
+
+class UserProfileScreen extends StatefulWidget {
+  const UserProfileScreen({
+    super.key,
+    required this.controller,
+    required this.userId,
+    this.summary = const {},
+  });
+
+  final WatchPartyController controller;
+  final String userId;
+  final Map<String, dynamic> summary;
+
+  @override
+  State<UserProfileScreen> createState() => _UserProfileScreenState();
+}
+
+class _UserProfileScreenState extends State<UserProfileScreen> {
+  Map<String, dynamic>? profile;
+  String? error;
+  bool loading = true;
+  bool actionBusy = false;
+  bool isFriend = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final results = await Future.wait([
+        widget.controller.api.publicProfile(widget.userId),
+        widget.controller.api.friends(),
+      ]);
+      if (!mounted) return;
+      final friends = results[1] as List<Map<String, dynamic>>;
+      setState(() {
+        profile = results[0] as Map<String, dynamic>;
+        isFriend = friends.any(
+          (item) => (item['id'] ?? item['userId'])?.toString() == widget.userId,
+        );
+        loading = false;
+        error = null;
+      });
+    } catch (exception) {
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        error = exception.toString();
+      });
+    }
+  }
+
+  Future<void> _toggleFriend() async {
+    if (actionBusy) return;
+    setState(() => actionBusy = true);
+    try {
+      if (isFriend) {
+        await widget.controller.api.removeFriend(widget.userId);
+      } else {
+        await widget.controller.api.sendFriendRequest(widget.userId);
+      }
+      if (mounted) setState(() => isFriend = !isFriend);
+    } finally {
+      if (mounted) setState(() => actionBusy = false);
+    }
+  }
+
+  List<Map<String, dynamic>> _maps(String key) =>
+      (profile?[key] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList(growable: false);
+
+  @override
+  Widget build(BuildContext context) {
+    final data = profile ?? widget.summary;
+    final name = _publicDisplayName(data);
+    final username = _publicHandle(data);
+    final avatar = data['avatarUrl']?.toString();
+    final mine = widget.userId == widget.controller.profile?.id;
+    return Scaffold(
+      appBar: AppBar(title: Text(name)),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : error != null
+          ? Center(
+              child: FilledButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry profile'),
+              ),
+            )
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 36),
+                children: [
+                  Center(
+                    child: CircleAvatar(
+                      radius: 52,
+                      backgroundColor: AppColors.panelSoft,
+                      foregroundImage: avatar?.isNotEmpty == true
+                          ? NetworkImage(avatar!)
+                          : null,
+                      child: avatar?.isNotEmpty == true
+                          ? null
+                          : Text(
+                              name.isEmpty ? '?' : name[0].toUpperCase(),
+                              style: const TextStyle(
+                                fontSize: 36,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    name,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 25,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  Text(
+                    '@$username',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: AppColors.muted),
+                  ),
+                  if (!mine) ...[
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: actionBusy ? null : _toggleFriend,
+                      icon: Icon(
+                        isFriend
+                            ? Icons.person_remove_rounded
+                            : Icons.person_add_rounded,
+                      ),
+                      label: Text(isFriend ? 'Remove friend' : 'Add friend'),
+                    ),
+                  ],
+                  if (data.containsKey('bio') &&
+                      data['bio']?.toString().trim().isNotEmpty == true)
+                    _Section(
+                      title: 'About',
+                      child: Text(data['bio'].toString()),
+                    ),
+                  if (data.containsKey('watchTogetherSeconds') ||
+                      data.containsKey('friendCount'))
+                    _Section(
+                      title: 'Stats',
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          if (data.containsKey('friendCount'))
+                            _Stat('${data['friendCount']}', 'Friends'),
+                          if (data.containsKey('watchTogetherSeconds'))
+                            _Stat(
+                              _duration(
+                                (data['watchTogetherSeconds'] as num).toInt(),
+                              ),
+                              'Watched',
+                            ),
+                        ],
+                      ),
+                    ),
+                  if ((data['interests'] as List<dynamic>?)?.isNotEmpty == true)
+                    _Section(
+                      title: 'Interests',
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: (data['interests'] as List<dynamic>)
+                            .map((value) => Chip(label: Text(value.toString())))
+                            .toList(),
+                      ),
+                    ),
+                  if (_maps('history').isNotEmpty)
+                    _MediaSection(title: 'History', items: _maps('history')),
+                  if (_maps('likedVideos').isNotEmpty)
+                    _MediaSection(
+                      title: 'Liked videos',
+                      items: _maps('likedVideos'),
+                    ),
+                  if (_maps('gallery').isNotEmpty)
+                    _MediaSection(title: 'Gallery', items: _maps('gallery')),
+                  if (_maps('connections').isNotEmpty)
+                    _Section(
+                      title: 'Connections',
+                      child: Column(
+                        children: [
+                          for (final connection in _maps('connections'))
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.link_rounded),
+                              title: Text(
+                                (connection['provider'] ?? 'Link').toString(),
+                              ),
+                              trailing: const Icon(
+                                Icons.open_in_new_rounded,
+                                size: 18,
+                              ),
+                              onTap: () async {
+                                final uri = Uri.tryParse(
+                                  connection['url']?.toString() ?? '',
+                                );
+                                if (uri != null) {
+                                  await launchUrl(
+                                    uri,
+                                    mode: LaunchMode.externalApplication,
+                                  );
+                                }
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+    );
+  }
+}
+
+String _publicDisplayName(
+  Map<String, dynamic> person, {
+  String fallback = 'Member',
+}) {
+  final displayName = person['displayName']?.toString().trim() ?? '';
+  if (displayName.isNotEmpty && !displayName.contains('@')) return displayName;
+  final username = person['username']?.toString().trim() ?? '';
+  if (username.isNotEmpty && !username.contains('@')) return username;
+  return fallback;
+}
+
+String _publicHandle(Map<String, dynamic> person) {
+  final username = person['username']?.toString().trim() ?? '';
+  if (username.isNotEmpty && !username.contains('@')) return username;
+  final id = (person['id'] ?? person['userId'])?.toString() ?? '';
+  return id.length >= 8 ? 'member-${id.substring(0, 8)}' : 'member';
+}
+
+String _duration(int seconds) {
+  final hours = seconds ~/ 3600;
+  final minutes = (seconds % 3600) ~/ 60;
+  return hours > 0 ? '${hours}h ${minutes}m' : '${minutes}m';
+}
+
+class _Section extends StatelessWidget {
+  const _Section({required this.title, required this.child});
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title.toUpperCase(),
+          style: const TextStyle(
+            color: AppColors.muted,
+            fontSize: 11,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 10),
+        child,
+      ],
+    ),
+  );
+}
+
+class _Stat extends StatelessWidget {
+  const _Stat(this.value, this.label);
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(
+        value,
+        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+      ),
+      Text(label, style: const TextStyle(color: AppColors.muted)),
+    ],
+  );
+}
+
+class _MediaSection extends StatelessWidget {
+  const _MediaSection({required this.title, required this.items});
+  final String title;
+  final List<Map<String, dynamic>> items;
+
+  @override
+  Widget build(BuildContext context) => _Section(
+    title: title,
+    child: SizedBox(
+      height: 145,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: items.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (_, index) {
+          final item = items[index];
+          return SizedBox(
+            width: 170,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: MediaPreview(
+                      mediaId: (item['mediaId'] ?? '').toString(),
+                      provider: (item['provider'] ?? 'YOUTUBE').toString(),
+                      thumbnailUrl: item['thumbnailUrl']?.toString(),
+                      contentLabel: (item['title'] ?? 'Video').toString(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  (item['title'] ?? 'Video').toString(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    ),
+  );
+}

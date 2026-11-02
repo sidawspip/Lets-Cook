@@ -14,58 +14,157 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:4200", "http://localhost:4200/*", "http://192.168.0.3:4200", "http://192.168.0.3:4200/*"],
-      "webOrigins": ["http://localhost:4200", "http://192.168.0.3:4200"],
+      "redirectUris": ["https://letscook.world", "https://letscook.world/*", "http://localhost:4200", "http://localhost:4200/*", "http://10.0.2.2:4200", "http://10.0.2.2:4200/*", "http://192.168.0.3:4200", "http://192.168.0.3:4200/*"],
+      "webOrigins": ["https://letscook.world", "http://localhost:4200", "http://10.0.2.2:4200", "http://192.168.0.3:4200"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:4200/*"
+        "post.logout.redirect.uris": "https://letscook.world##https://letscook.world/*##http://localhost:4200##http://localhost:4200/*##http://10.0.2.2:4200##http://10.0.2.2:4200/*##http://192.168.0.3:4200##http://192.168.0.3:4200/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "provider-picture",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "picture",
+            "claim.name": "picture",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "lets-cook-mobile",
+      "name": "Let's Cook Mobile",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["world.letscook.app:/oauthredirect"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "provider-picture",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "picture",
+            "claim.name": "picture",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "lets-cook-native-google",
+      "name": "Let's Cook Native Google Broker",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${KEYCLOAK_NATIVE_AUTH_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "oauth2.jwt.authorization.grant.enabled": "true",
+        "oauth2.jwt.authorization.grant.idp": "google"
+      },
+      "protocolMappers": [
+        {
+          "name": "provider-picture",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "picture",
+            "claim.name": "picture",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "google",
+      "displayName": "Continue with Google",
+      "providerId": "google",
+      "enabled": true,
+      "trustEmail": true,
+      "storeToken": false,
+      "linkOnly": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${GOOGLE_CLIENT_ID}",
+        "clientSecret": "${GOOGLE_CLIENT_SECRET}",
+        "defaultScope": "openid profile email",
+        "syncMode": "IMPORT",
+        "useJwksUrl": "true",
+        "issuer": "https://accounts.google.com",
+        "jwksUrl": "https://www.googleapis.com/oauth2/v3/certs",
+        "jwtAuthorizationGrantEnabled": "true",
+        "jwtAuthorizationGrantAssertionReuseAllowed": "true",
+        "jwtAuthorizationGrantMaxAllowedAssertionExpiration": "3600",
+        "jwtAuthorizationGrantLimitAccessTokenExp": "true"
+      }
+    },
+    {
+      "alias": "x",
+      "displayName": "Continue with X",
+      "providerId": "oauth2",
+      "enabled": false,
+      "trustEmail": false,
+      "storeToken": false,
+      "linkOnly": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "authorizationUrl": "https://x.com/i/oauth2/authorize",
+        "tokenUrl": "https://api.x.com/2/oauth2/token",
+        "userInfoUrl": "https://api.x.com/2/users/me?user.fields=confirmed_email,profile_image_url,name",
+        "clientAuthMethod": "client_secret_basic",
+        "defaultScope": "users.read tweet.read",
+        "pkceEnabled": "true",
+        "pkceMethod": "S256",
+        "userIDClaim": "data.id",
+        "userNameClaim": "data.username",
+        "fullNameClaim": "data.name",
+        "emailClaim": "data.confirmed_email"
+      }
+    }
+  ],
+  "identityProviderMappers": [
+    {
+      "name": "google-picture",
+      "identityProviderAlias": "google",
+      "identityProviderMapper": "oidc-user-attribute-idp-mapper",
+      "config": {
+        "claim": "picture",
+        "user.attribute": "picture",
+        "syncMode": "FORCE"
       }
     }
   ],
   "users": [
     {
-      "username": "demo",
+      "username": "service-account-lets-cook-native-google",
       "enabled": true,
-      "emailVerified": true,
-      "email": "demo@example.com",
-      "firstName": "Demo",
-      "lastName": "User",
-      "credentials": [
-        {"type": "password", "value": "demo", "temporary": false}
-      ]
-    },
-    {
-      "username": "ankit",
-      "enabled": true,
-      "emailVerified": true,
-      "email": "ankit@uat.local",
-      "firstName": "Ankit",
-      "lastName": "Jain",
-      "credentials": [
-        {"type": "password", "value": "Uat@123", "temporary": false}
-      ]
-    },
-    {
-      "username": "rahul",
-      "enabled": true,
-      "emailVerified": true,
-      "email": "rahul@uat.local",
-      "firstName": "Rahul",
-      "lastName": "Sharma",
-      "credentials": [
-        {"type": "password", "value": "Uat@123", "temporary": false}
-      ]
-    },
-    {
-      "username": "priya",
-      "enabled": true,
-      "emailVerified": true,
-      "email": "priya@uat.local",
-      "firstName": "Priya",
-      "lastName": "Rao",
-      "credentials": [
-        {"type": "password", "value": "Uat@123", "temporary": false}
-      ]
+      "serviceAccountClientId": "lets-cook-native-google",
+      "clientRoles": {
+        "realm-management": ["manage-users", "query-users", "view-users"]
+      }
     }
   ]
 }

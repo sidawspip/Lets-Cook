@@ -7,7 +7,7 @@ rtc:
   enable_loopback_candidate: true
   # UAT LAN address: required for phones/laptops on the same Wi-Fi to reach
   # LiveKit's media ports. Remote networks require a public TURN deployment.
-  node_ip: 192.168.0.3
+  node_ip: 192.168.0.5
 redis:
   address: redis:6379
 logging:

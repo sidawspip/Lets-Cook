@@ -7,6 +7,10 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
 
+/**
+ * Common API error contract.
+ * Converts explicit business rejections and bean-validation failures into RFC 9457 problem details.
+ */
 @RestControllerAdvice
 public class ApiExceptionHandler {
     @ExceptionHandler(ResponseStatusException.class)

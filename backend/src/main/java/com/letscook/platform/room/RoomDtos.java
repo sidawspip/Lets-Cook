@@ -33,7 +33,14 @@ public final class RoomDtos {
             int memberCount,
             int pendingCount,
             String visibility,
-            String screenSharePolicy) {
+            String screenSharePolicy,
+            int viewerCount,
+            String mediaTitle,
+            String mediaId,
+            String mediaProvider,
+            String thumbnailUrl,
+            double positionSeconds,
+            Double durationSeconds) {
     }
 
     public record RoomCreated(RoomSummary room, String accessKey) {
@@ -69,10 +76,13 @@ public final class RoomDtos {
     }
 
     public record RoomMember(UUID userId, String username, String displayName, RoomRole role,
-                             boolean canShareScreen, boolean canAddVideos, boolean online) {
+                             boolean canShareScreen, boolean canAddVideos, boolean canViewVideo,
+                             boolean videoAccessRequested, boolean online) {
     }
 
     public record PublicRoom(UUID id,String name,String description,AccessPolicy accessPolicy,int viewerCount,
-                             String mediaTitle,String mediaId,java.util.List<String> viewerAvatars,boolean joined) {}
+                             String mediaTitle,String mediaId,String mediaProvider,String thumbnailUrl,
+                             double positionSeconds,Double durationSeconds,
+                             java.util.List<String> viewerAvatars,boolean joined) {}
 }
 

@@ -36,9 +36,10 @@ try {
     }
 
     $values = [ordered]@{
-        LIVEKIT_PUBLIC_URL = $LiveKitUrl.Trim()
-        LIVEKIT_API_KEY = $LiveKitApiKey.Trim()
-        LIVEKIT_API_SECRET = $plainSecret
+        LIVEKIT_MODE = 'cloud'
+        LIVEKIT_CLOUD_URL = $LiveKitUrl.Trim()
+        LIVEKIT_CLOUD_API_KEY = $LiveKitApiKey.Trim()
+        LIVEKIT_CLOUD_API_SECRET = $plainSecret
     }
 
     $lines = if (Test-Path -LiteralPath $envPath) {

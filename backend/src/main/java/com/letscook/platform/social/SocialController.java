@@ -3,105 +3,65 @@ package com.letscook.platform.social;
 import com.letscook.platform.common.CurrentUser;
 import com.letscook.platform.common.CurrentUserService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
-import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ResponseStatusException;
-
-import java.time.Instant;
+import org.springframework.web.multipart.MultipartFile;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Social API for friends, requests, blocks, direct messages, attachments, and notification summaries.
+ *
+ * <p>Direct messages are limited to accepted, unblocked friendships. Message history is
+ * persistent, while live DM notification events are delivered to the target user's STOMP queue.</p>
+ */
 @RestController
 @RequestMapping("/api/social")
 public class SocialController {
-    private final JdbcClient jdbc;
-    private final CurrentUserService users;
+    private final CurrentUserService users;private final SocialService social;
+    public SocialController(CurrentUserService users,SocialService social){this.users=users;this.social=social;}
+    /** Lists accepted, unblocked friends with online and shared-watch information. */
+    @GetMapping("/friends") List<SocialModels.Friend> friends(@AuthenticationPrincipal Jwt jwt){return social.friends(users.synchronize(jwt).id());}
 
-    public SocialController(JdbcClient jdbc, CurrentUserService users) { this.jdbc = jdbc; this.users = users; }
+    /** Lists pending friend requests received by the authenticated user. */
+    @GetMapping("/friend-requests") List<SocialModels.FriendRequest> requests(@AuthenticationPrincipal Jwt jwt){return social.requests(users.synchronize(jwt).id());}
 
-    @GetMapping("/friends")
-    List<Friend> friends(@AuthenticationPrincipal Jwt jwt) {
-        CurrentUser me = users.synchronize(jwt);
-        return jdbc.sql("""
-            SELECT u.id, u.username, u.display_name, u.avatar_url, (u.last_seen_at > now() - interval '75 seconds') online
-            FROM friendships f JOIN app_users u ON u.id = CASE WHEN f.requester_id = :me THEN f.addressee_id ELSE f.requester_id END
-            WHERE (f.requester_id = :me OR f.addressee_id = :me) AND f.status = 'ACCEPTED'
-            ORDER BY online DESC, u.display_name
-            """).param("me", me.id()).query((rs,n) -> new Friend(rs.getObject("id", UUID.class), rs.getString("username"),
-                rs.getString("display_name"), rs.getString("avatar_url"), rs.getBoolean("online"))).list();
-    }
+    /** Returns pending friend-request and unread-DM summaries ordered newest first. */
+    @GetMapping("/notifications") List<SocialModels.Notification> notifications(@AuthenticationPrincipal Jwt jwt){return social.notifications(users.synchronize(jwt).id());}
 
-    @GetMapping("/friend-requests")
-    List<FriendRequest> requests(@AuthenticationPrincipal Jwt jwt) {
-        CurrentUser me = users.synchronize(jwt);
-        return jdbc.sql("""
-            SELECT f.id, u.id user_id, u.username, u.display_name
-            FROM friendships f JOIN app_users u ON u.id = f.requester_id
-            WHERE f.addressee_id = :me AND f.status = 'PENDING' ORDER BY f.created_at
-            """).param("me", me.id()).query((rs,n) -> new FriendRequest(rs.getObject("id", UUID.class),
-                rs.getObject("user_id", UUID.class), rs.getString("username"), rs.getString("display_name"))).list();
-    }
+    /** Sends a friend request unless the target is self, blocked, or already has a relationship. */
+    @PostMapping("/friend-requests/{userId}") void request(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID userId){social.request(users.synchronize(jwt).id(),userId);}
 
-    @PostMapping("/friend-requests/{userId}")
-    void request(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID userId) {
-        CurrentUser me = users.synchronize(jwt);
-        if (me.id().equals(userId)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "You cannot friend yourself");
-        try {
-            jdbc.sql("INSERT INTO friendships (id, requester_id, addressee_id) VALUES (:id, :me, :them)")
-                    .param("id", UUID.randomUUID()).param("me", me.id()).param("them", userId).update();
-        } catch (RuntimeException ex) { throw new ResponseStatusException(HttpStatus.CONFLICT, "Friend request already exists"); }
-    }
+    /** Removes an accepted friendship or cancels a pending relationship. */
+    @DeleteMapping("/friends/{userId}") void removeFriend(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID userId){social.removeFriend(users.synchronize(jwt).id(),userId);}
 
-    @PostMapping("/friend-requests/{requestId}/{decision}")
-    void decide(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID requestId, @PathVariable String decision) {
-        CurrentUser me = users.synchronize(jwt);
-        if (!decision.equals("accept") && !decision.equals("reject")) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid decision");
-        int changed = decision.equals("accept")
-                ? jdbc.sql("UPDATE friendships SET status='ACCEPTED', updated_at=now() WHERE id=:id AND addressee_id=:me AND status='PENDING'").param("id",requestId).param("me",me.id()).update()
-                : jdbc.sql("DELETE FROM friendships WHERE id=:id AND addressee_id=:me AND status='PENDING'").param("id",requestId).param("me",me.id()).update();
-        if (changed == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Friend request not found");
-    }
+    /** Accepts or rejects a received pending request; decision must be accept or reject. */
+    @PostMapping("/friend-requests/{requestId}/{decision}") void decide(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID requestId,@PathVariable String decision){social.decide(users.synchronize(jwt).id(),requestId,decision);}
 
-    @GetMapping("/messages/{friendId}")
-    @Transactional
-    List<Message> messages(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID friendId) {
-        CurrentUser me = users.synchronize(jwt); requireFriends(me.id(), friendId);
-        List<Message> result = jdbc.sql("""
-            SELECT id, sender_id, recipient_id, body, created_at FROM direct_messages
-            WHERE (sender_id=:me AND recipient_id=:friend) OR (sender_id=:friend AND recipient_id=:me)
-            ORDER BY created_at DESC LIMIT 100
-            """).param("me",me.id()).param("friend",friendId)
-                .query((rs,n) -> new Message(rs.getObject("id",UUID.class), rs.getObject("sender_id",UUID.class),
-                        rs.getObject("recipient_id",UUID.class), rs.getString("body"), rs.getTimestamp("created_at").toInstant())).list();
-        jdbc.sql("UPDATE direct_messages SET read_at=now() WHERE sender_id=:friend AND recipient_id=:me AND read_at IS NULL")
-                .param("friend",friendId).param("me",me.id()).update();
-        java.util.Collections.reverse(result); return result;
-    }
+    /** Lists up to 500 users blocked by the authenticated user. */
+    @GetMapping("/blocked") List<SocialModels.BlockedPerson> blocked(@AuthenticationPrincipal Jwt jwt){return social.blocked(users.synchronize(jwt).id());}
 
-    @PostMapping("/messages/{friendId}")
-    Message send(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID friendId, @Valid @RequestBody SendMessage input) {
-        CurrentUser me = users.synchronize(jwt); requireFriends(me.id(), friendId);
-        UUID id=UUID.randomUUID(); Instant now=Instant.now(); String body=input.body().trim();
-        jdbc.sql("INSERT INTO direct_messages (id,sender_id,recipient_id,body,created_at) VALUES (:id,:me,:friend,:body,:now)")
-                .param("id",id).param("me",me.id()).param("friend",friendId).param("body",body)
-                .param("now", java.sql.Timestamp.from(now)).update();
-        return new Message(id,me.id(),friendId,body,now);
-    }
+    /** Blocks a user, removes any friendship, and marks incoming messages from that user read. */
+    @PostMapping("/blocks/{userId}") void block(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID userId){social.block(users.synchronize(jwt).id(),userId);}
 
-    private void requireFriends(UUID a, UUID b) {
-        boolean ok=jdbc.sql("SELECT EXISTS(SELECT 1 FROM friendships WHERE status='ACCEPTED' AND ((requester_id=:a AND addressee_id=:b) OR (requester_id=:b AND addressee_id=:a)))")
-                .param("a",a).param("b",b).query(Boolean.class).single();
-        if(!ok) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Direct messages are available to friends only");
-    }
+    /** Removes the authenticated user's block for the target user. */
+    @DeleteMapping("/blocks/{userId}") void unblock(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID userId){social.unblock(users.synchronize(jwt).id(),userId);}
 
-    public record Friend(UUID id,String username,String displayName,String avatarUrl,boolean online) {}
-    public record FriendRequest(UUID id,UUID userId,String username,String displayName) {}
-    public record Message(UUID id,UUID senderId,UUID recipientId,String body,Instant createdAt) {}
-    public record SendMessage(@NotBlank @Size(max=2000) String body) {}
+    /** Returns the latest 100 messages with a friend in chronological order and marks incoming messages read. */
+    @GetMapping("/messages/{friendId}") List<SocialModels.Message> messages(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID friendId){return social.messages(users.synchronize(jwt).id(),friendId);}
+
+    /** Stores a text DM for an accepted friend and emits a targeted real-time notification. */
+    @PostMapping("/messages/{friendId}") SocialModels.Message send(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID friendId,@Valid @RequestBody SocialModels.SendMessage input){CurrentUser user=users.synchronize(jwt);return social.send(user,friendId,input);}
+
+    /** Stores a validated IMAGE or VIDEO attachment DM and emits a targeted notification. */
+    @PostMapping(value="/messages/{friendId}/attachments",consumes=MediaType.MULTIPART_FORM_DATA_VALUE) SocialModels.Message sendAttachment(@AuthenticationPrincipal Jwt jwt,@PathVariable UUID friendId,@RequestParam("file") MultipartFile file,@RequestParam("kind") String kind){return social.sendAttachment(users.synchronize(jwt),friendId,file,kind);}
+
+    /** Serves a validated local DM attachment with a seven-day cache policy. */
+    @GetMapping("/attachments/{fileName:.+}") ResponseEntity<FileSystemResource> attachment(@PathVariable String fileName){var file=social.attachment(fileName);return ResponseEntity.ok().cacheControl(CacheControl.maxAge(Duration.ofDays(7))).contentType(MediaType.parseMediaType(file.contentType())).body(new FileSystemResource(file.path()));}
 }

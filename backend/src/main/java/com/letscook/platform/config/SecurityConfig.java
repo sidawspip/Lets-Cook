@@ -19,6 +19,12 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.List;
 
+/**
+ * HTTP API security contract.
+ *
+ * <p>Validates Keycloak JWTs, permits only health/public-file/WebSocket bootstrap routes without
+ * a bearer token, configures trusted issuers and CORS, and provides password hashing for room keys.</p>
+ */
 @Configuration
 public class SecurityConfig {
 
@@ -28,8 +34,13 @@ public class SecurityConfig {
                 .cors(Customizer.withDefaults())
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        // The WebSocket upgrade request targets exactly /ws; /ws/**
+                        // only covers child paths and caused native clients to receive
+                        // an HTTP 401 before their authenticated STOMP CONNECT frame.
+                        .requestMatchers("/actuator/health", "/actuator/info", "/ws", "/ws/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/google/native").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/me/avatar/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/social/attachments/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()))
                 .build();
@@ -41,7 +52,14 @@ public class SecurityConfig {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         var allowedIssuers = java.util.Set.of(
                 "http://localhost:8180/realms/lets-cook",
-                "http://192.168.0.3:8180/realms/lets-cook");
+                // Android Emulator routes the development host through this
+                // fixed alias, so Keycloak-issued mobile tokens use it as iss.
+                "http://10.0.2.2:8180/realms/lets-cook",
+                "http://192.168.0.3:8180/realms/lets-cook",
+                "http://192.168.0.5:8180/realms/lets-cook",
+                "http://keycloak:8080/realms/lets-cook",
+                "https://letscook.world/realms/lets-cook",
+                "https://www.letscook.world/realms/lets-cook");
         var acceptedIssuer = new JwtClaimValidator<String>("iss", issuer -> issuer != null && (
                 allowedIssuers.contains(issuer)
                         || issuer.matches("https://[a-z0-9-]+\\.trycloudflare\\.com/realms/lets-cook")));
@@ -61,7 +79,8 @@ public class SecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(List.of(
                 "http://localhost:4200",
-                "http://192.168.0.3:4200"));
+                "http://192.168.0.3:4200",
+                "http://192.168.0.5:4200"));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

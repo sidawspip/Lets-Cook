@@ -34,6 +34,8 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.8.0
     command: start-dev --import-realm
+    env_file:
+      - ${LETSCOOK_SECURE_ENV:-C:/Users/siddh/.letscook/secrets/native-google.env}
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
@@ -72,15 +74,17 @@ services:
 
   avatar-storage-init:
     image: alpine:3.22
-    command: ["sh", "-c", "chown -R 100:101 /avatars && chmod 700 /avatars"]
+    command: ["sh", "-c", "chown -R 100:101 /avatars /messages && chmod 700 /avatars /messages"]
     volumes:
       - avatar_uploads:/avatars
+      - message_uploads:/messages
 
   backend:
     build:
       context: ./backend
     env_file:
       - ./infra/.env
+      - ${LETSCOOK_SECURE_ENV:-C:/Users/siddh/.letscook/secrets/native-google.env}
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-letscook}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-letscook}
@@ -88,15 +92,21 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/lets-cook/protocol/openid-connect/certs
       APP_SECURITY_ISSUER: http://localhost:8180/realms/lets-cook
-      # Keep the local default for LAN development. Set LIVEKIT_PUBLIC_URL to a
-      # trusted wss:// endpoint (LiveKit Cloud or a public LiveKit deployment)
-      # when Cloudflare UAT users must exchange media across the Internet.
-      APP_LIVEKIT_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
-      APP_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      APP_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-lets-cook-dev-livekit-secret-32-chars}
+      APP_AUTH_KEYCLOAK_URL: ${APP_AUTH_KEYCLOAK_URL:-http://keycloak:8080}
+      # One deployment flag selects Cloud or your public self-hosted/router endpoint.
+      # "router" is accepted as an alias for "self-hosted".
+      LIVEKIT_MODE: ${LIVEKIT_MODE:-self-hosted}
+      LIVEKIT_CLOUD_URL: ${LIVEKIT_CLOUD_URL:-${LIVEKIT_PUBLIC_URL:-}}
+      LIVEKIT_CLOUD_API_KEY: ${LIVEKIT_CLOUD_API_KEY:-${LIVEKIT_API_KEY:-}}
+      LIVEKIT_CLOUD_API_SECRET: ${LIVEKIT_CLOUD_API_SECRET:-${LIVEKIT_API_SECRET:-}}
+      LIVEKIT_SELF_HOSTED_URL: ${LIVEKIT_SELF_HOSTED_URL:-ws://localhost:7880}
+      LIVEKIT_SELF_HOSTED_API_KEY: ${LIVEKIT_SELF_HOSTED_API_KEY:-${LIVEKIT_API_KEY:-devkey}}
+      LIVEKIT_SELF_HOSTED_API_SECRET: ${LIVEKIT_SELF_HOSTED_API_SECRET:-${LIVEKIT_API_SECRET:-lets-cook-dev-livekit-secret-32-chars}}
       APP_AVATAR_DIRECTORY: /app/uploads/avatars
+      APP_MESSAGE_DIRECTORY: /app/uploads/messages
     volumes:
       - avatar_uploads:/app/uploads/avatars
+      - message_uploads:/app/uploads/messages
     ports:
       - "8080:8080"
     depends_on:
@@ -121,4 +131,5 @@ volumes:
   postgres_data:
   redis_data:
   avatar_uploads:
+  message_uploads:
 

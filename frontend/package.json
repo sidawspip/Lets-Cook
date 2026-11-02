@@ -2,6 +2,9 @@
   "name": "lets-cook-web",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24.15.0"
+  },
   "scripts": {
     "start": "ng serve --host 0.0.0.0",
     "build": "ng build",
@@ -13,18 +16,19 @@
     "@angular/core": "^22.2.0",
     "@angular/forms": "^22.2.0",
     "@angular/platform-browser": "^22.2.0",
+    "@stomp/stompjs": "^7.5.0",
+    "hls.js": "^1.7.3",
     "keycloak-js": "^26.2.0",
     "livekit-client": "^2.22.3",
     "rxjs": "^7.8.2",
     "tslib": "^2.8.1"
   },
   "devDependencies": {
-    "@livekit/throws-transformer": "^0.1.8",
-    "@types/sdp-transform": "^3.0.0",
     "@angular/build": "^22.2.0",
     "@angular/cli": "^22.2.0",
     "@angular/compiler-cli": "^22.2.0",
+    "@livekit/throws-transformer": "^0.1.8",
+    "@types/sdp-transform": "^3.0.0",
     "typescript": "~6.0.2"
   }
 }
-

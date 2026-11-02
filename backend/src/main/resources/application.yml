@@ -26,8 +26,8 @@ spring:
     enabled: true
   servlet:
     multipart:
-      max-file-size: 5MB
-      max-request-size: 5MB
+      max-file-size: 25MB
+      max-request-size: 26MB
 
 management:
   endpoints:
@@ -36,14 +36,26 @@ management:
         include: health,info
 
 app:
+  auth:
+    keycloak-url: ${APP_AUTH_KEYCLOAK_URL:https://letscook.world}
+    keycloak-client-id: ${KEYCLOAK_NATIVE_AUTH_CLIENT_ID:}
+    keycloak-client-secret: ${KEYCLOAK_NATIVE_AUTH_CLIENT_SECRET:}
+    google-web-client-id: ${GOOGLE_WEB_CLIENT_ID:}
   security:
     issuer: ${APP_SECURITY_ISSUER:http://localhost:8180/realms/lets-cook}
   livekit:
-    url: ${APP_LIVEKIT_URL:ws://localhost:7880}
-    api-key: ${APP_LIVEKIT_API_KEY:devkey}
-    api-secret: ${APP_LIVEKIT_API_SECRET:lets-cook-dev-livekit-secret-32-chars}
+    mode: ${LIVEKIT_MODE:self-hosted}
+    cloud:
+      url: ${LIVEKIT_CLOUD_URL:${LIVEKIT_PUBLIC_URL:}}
+      api-key: ${LIVEKIT_CLOUD_API_KEY:${LIVEKIT_API_KEY:}}
+      api-secret: ${LIVEKIT_CLOUD_API_SECRET:${LIVEKIT_API_SECRET:}}
+    self-hosted:
+      url: ${LIVEKIT_SELF_HOSTED_URL:ws://localhost:7880}
+      api-key: ${LIVEKIT_SELF_HOSTED_API_KEY:${LIVEKIT_API_KEY:devkey}}
+      api-secret: ${LIVEKIT_SELF_HOSTED_API_SECRET:${LIVEKIT_API_SECRET:lets-cook-dev-livekit-secret-32-chars}}
   uploads:
     avatar-directory: ${APP_AVATAR_DIRECTORY:/app/uploads/avatars}
+    message-directory: ${APP_MESSAGE_DIRECTORY:/app/uploads/messages}
   youtube:
     api-key: ${YOUTUBE_API_KEY:}
 

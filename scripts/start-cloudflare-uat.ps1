@@ -83,7 +83,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Cloudflare Quick Tunnel failed to start.' }
 Write-Host '4/5 Waiting for the temporary Cloudflare URL...'
 $publicUrl = $null
 for ($attempt = 1; $attempt -le 30; $attempt++) {
+    # cloudflared writes its normal Quick Tunnel notice to stderr. With the
+    # script's Stop preference, PowerShell otherwise treats that notice as a
+    # terminating error before the URL can be parsed.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $logs = docker logs $containerName 2>&1 | Out-String
+    $ErrorActionPreference = $previousErrorActionPreference
     $match = [regex]::Match($logs, 'https://[a-z0-9-]+\.trycloudflare\.com')
     if ($match.Success) {
         $publicUrl = $match.Value
@@ -107,8 +113,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not find the Keycloak web client.' }
 $client = @($clientJson | ConvertFrom-Json)[0]
 if (-not $client.id) { throw 'Keycloak client lets-cook-web was not found.' }
 
-$redirects = '["http://localhost:4200","http://localhost:4200/*","http://192.168.0.3:4200","http://192.168.0.3:4200/*","' + $publicUrl + '","' + $publicUrl + '/*"]'
-$origins = '["http://localhost:4200","http://192.168.0.3:4200","' + $publicUrl + '"]'
+$redirects = '["http://localhost:4200","http://localhost:4200/*","http://192.168.0.3:4200","http://192.168.0.3:4200/*","https://letscook.world","https://letscook.world/*","https://www.letscook.world","https://www.letscook.world/*","' + $publicUrl + '","' + $publicUrl + '/*"]'
+$origins = '["http://localhost:4200","http://192.168.0.3:4200","https://letscook.world","https://www.letscook.world","' + $publicUrl + '"]'
 docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh update "clients/$($client.id)" `
     -r lets-cook -s "redirectUris=$redirects" -s "webOrigins=$origins"
 if ($LASTEXITCODE -ne 0) { throw 'Could not register the Quick Tunnel URL in Keycloak.' }

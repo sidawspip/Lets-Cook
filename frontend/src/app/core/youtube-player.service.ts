@@ -26,12 +26,12 @@ export class YoutubePlayerService {
       }
     }); return this.loader;
   }
-  async create(element:HTMLElement,videoId:string,onState:(state:number)=>void):Promise<YoutubePlayer> {
+  async create(element:HTMLElement,videoId:string,onState:(state:number)=>void,autoplay=false):Promise<YoutubePlayer> {
     await this.load(); element.replaceChildren();
     return new Promise(resolve=>{
       const player:YoutubePlayer=new (window as any).YT.Player(element,{videoId,width:'100%',height:'100%',
-        playerVars:{controls:0,disablekb:1,fs:0,iv_load_policy:3,playsinline:1,cc_load_policy:1,origin:location.origin,rel:0},
-        events:{onReady:()=>resolve(player),onStateChange:(event:PlayerEvent)=>onState(event.data)}});
+        playerVars:{autoplay:autoplay?1:0,mute:0,controls:0,disablekb:1,fs:0,iv_load_policy:3,playsinline:1,origin:location.origin,rel:0},
+        events:{onReady:()=>{if(autoplay){player.unMute();player.playVideo();}resolve(player);},onStateChange:(event:PlayerEvent)=>onState(event.data)}});
     });
   }
 }

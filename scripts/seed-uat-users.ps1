@@ -12,6 +12,7 @@ $token = Invoke-RestMethod -Method Post -Uri "$KeycloakUrl/realms/master/protoco
     -Body @{ client_id = 'admin-cli'; grant_type = 'password'; username = $AdminUsername; password = $AdminPassword }
 $headers = @{ Authorization = "Bearer $($token.access_token)" }
 $users = @(
+    @{ username = 'test';  email = 'test@uat.local';  firstName = 'Test';  lastName = 'User';   password = 'test' },
     @{ username = 'demo';  email = 'demo@example.com'; firstName = 'Demo';  lastName = 'User';   password = 'demo' },
     @{ username = 'ankit'; email = 'ankit@uat.local';  firstName = 'Ankit'; lastName = 'Jain';   password = $UatPassword },
     @{ username = 'rahul'; email = 'rahul@uat.local';  firstName = 'Rahul'; lastName = 'Sharma'; password = $UatPassword },

@@ -40,8 +40,11 @@ export class AuthService {
     }
   }
 
-  login(): Promise<void> {
-    return this.keycloak.login({ redirectUri: window.location.origin });
+  login(identityProvider?: 'google' | 'x'): Promise<void> {
+    return this.keycloak.login({
+      redirectUri: window.location.origin,
+      idpHint: identityProvider
+    });
   }
 
   logout(): Promise<void> {

@@ -3,9 +3,32 @@
 .vscode/
 .env
 **/.env
+.cloudflared/
 **/node_modules/
 **/dist/
 **/target/
 *.log
 .DS_Store
+
+# Flutter / Android build output
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/build/
+mobile/android/.gradle/
+mobile/android/local.properties
+
+# Local runtime, test, and reverse-engineering artifacts
+.runtime/
+.tmp/
+.tools/
+tmp/
+artifacts/
+MCP Repo Backups/
+youtube-demo-room.txt
+youtube-test-room.txt
+
+# Framework build caches
+frontend/.angular/cache/
+mobile/android/build/
 
