@@ -64,7 +64,9 @@ public class WatchServiceImpl implements WatchService {
         repository.save(
                 roomId, userId, input.provider(), input.sourceType(), input.mediaId(),
                 input.sourceUrl(), input.title(), input.playing(), input.positionSeconds(),
-                input.durationSeconds(), input.playbackRate(), null);
+                input.durationSeconds() != null ? input.durationSeconds()
+                        : "YOUTUBE".equalsIgnoreCase(input.provider()) ? youtube.durationSeconds(input.mediaId()) : null,
+                input.playbackRate(), null);
         WatchState result = repository.state(roomId).orElseThrow();
         if(previous==null||!java.util.Objects.equals(previous.mediaId(),result.mediaId())
                 ||!java.util.Objects.equals(previous.provider(),result.provider()))
@@ -125,7 +127,7 @@ public class WatchServiceImpl implements WatchService {
     public QueueItem addQueue(UUID roomId, UUID userId, QueueAdd input) {
         requireMember(roomId, userId);
         return queueService.add(
-                roomId, userId, input.provider(), input.mediaId(), input.title(), input.thumbnailUrl(),
+                roomId, userId, input.provider(), input.mediaId(), input.sourceUrl(), input.title(), input.thumbnailUrl(),
                 input.personalQueueItem() == null || input.personalQueueItem());
     }
 
@@ -177,14 +179,23 @@ public class WatchServiceImpl implements WatchService {
     @Override
     @Transactional
     public WatchState playNext(UUID roomId, UUID userId, UUID requestedQueueId) {
-        requireHost(roomId, userId);
+        WatchState current = repository.state(roomId).orElse(null);
+        if (current != null && current.playing()) {
+            requireHost(roomId, userId);
+        } else {
+            requireMember(roomId, userId);
+            if (!queueService.queue(roomId, userId).canAdd()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "The host has not allowed you to select videos");
+            }
+        }
         return playNextInternal(roomId, userId, requestedQueueId);
     }
 
     @Override
     @Transactional
     public void updateSettings(UUID roomId, UUID userId, WatchSettings input) {
-        requireManager(roomId, userId);
+        requireHost(roomId, userId);
         queueService.updateSettings(roomId, input.mode(), input.transitionSeconds());
     }
 
@@ -192,7 +203,7 @@ public class WatchServiceImpl implements WatchService {
     @Transactional
     public void updateVideoPermission(
             UUID roomId, UUID userId, UUID targetUserId, Map<String, Boolean> input) {
-        requireManager(roomId, userId);
+        requireHost(roomId, userId);
         queueService.updateVideoPermission(roomId, targetUserId, Boolean.TRUE.equals(input.get("allowed")));
     }
 
@@ -228,10 +239,15 @@ public class WatchServiceImpl implements WatchService {
 
     private void saveNext(UUID roomId, UUID userId, NextVideo next, Instant transition) {
         String direct = next.provider().startsWith("DIRECT") || BROWSER_PROVIDERS.contains(next.provider())
-                ? next.mediaId() : null;
+                ? (next.sourceUrl() == null || next.sourceUrl().isBlank()
+                        ? next.mediaId()
+                        : next.sourceUrl())
+                : null;
         repository.save(
                 roomId, userId, next.provider(), next.provider(), next.mediaId(), direct,
-                next.title(), true, 0, null, 1, transition);
+                next.title(), true, 0,
+                "YOUTUBE".equalsIgnoreCase(next.provider()) ? youtube.durationSeconds(next.mediaId()) : null,
+                1, transition);
     }
 
     private CommandState applyCommand(WatchState current, WatchCommand command) {
@@ -254,7 +270,8 @@ public class WatchServiceImpl implements WatchService {
                 mediaId = media.mediaId();
                 sourceUrl = media.sourceUrl();
                 title = media.title();
-                duration = media.durationSeconds();
+                duration = media.durationSeconds() != null ? media.durationSeconds()
+                        : "YOUTUBE".equalsIgnoreCase(media.provider()) ? youtube.durationSeconds(media.mediaId()) : null;
                 position = command.positionSeconds() == null ? 0 : command.positionSeconds();
                 playing = false;
                 validateMedia(provider, sourceUrl);

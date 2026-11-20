@@ -14,11 +14,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,9 +32,16 @@ import java.util.regex.Pattern;
 @Repository
 class WebMediaResolverRepository {
     private static final int MAX_HTML_BYTES = 2_000_000;
+    private static final String MEDIA_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36";
     private static final Pattern TITLE = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
     private static final Pattern OG_TITLE = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"']og:title[\"'][^>]+content=[\"']([^\"']+)");
     private static final Pattern OG_SITE = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"']og:site_name[\"'][^>]+content=[\"']([^\"']+)");
+    private static final List<Pattern> THUMBNAIL_PATTERNS = List.of(
+            Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"'](?:og:image|twitter:image(?::src)?)[\"'][^>]+content=[\"']([^\"']+)"),
+            Pattern.compile("(?is)<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+(?:property|name)=[\"'](?:og:image|twitter:image(?::src)?)[\"']")
+    );
     private static final List<Pattern> MEDIA_PATTERNS = List.of(
             Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"'](?:og:video(?::url)?|twitter:player:stream)[\"'][^>]+content=[\"']([^\"']+)"),
             Pattern.compile("(?is)<(?:video|source)[^>]+src=[\"']([^\"']+)"),
@@ -61,7 +71,7 @@ class WebMediaResolverRepository {
             }
             String contentType = response.headers().firstValue("content-type").orElse("").toLowerCase(Locale.ROOT);
             if (isHls(page.toString(), contentType) || isMp4(page.toString(), contentType)) {
-                return result(page, page, filename(page), page.getHost(), contentType);
+                return result(page, page, filename(page), page.getHost(), contentType, null);
             }
             if (!contentType.contains("text/html") && !contentType.contains("application/xhtml")) {
                 throw unsupported("The selected URL is not a supported webpage, MP4, or HLS stream.");
@@ -69,13 +79,20 @@ class WebMediaResolverRepository {
             byte[] bytes = response.body().readNBytes(MAX_HTML_BYTES + 1);
             if (bytes.length > MAX_HTML_BYTES) throw unsupported("The selected page is too large to inspect safely.");
             String html = new String(bytes, StandardCharsets.UTF_8);
-            URI media = findMedia(page, html);
-            if (media == null) {
+            List<URI> media = findMedia(page, html);
+            if (media.isEmpty()) {
                 throw unsupported("This page does not expose a public MP4 or HLS stream. DRM and login-bound video need a provider integration.");
             }
             String title = first(html, OG_TITLE, TITLE);
             String site = first(html, OG_SITE);
-            return result(page, media, clean(title, filename(media)), clean(site, page.getHost()), "");
+            URI thumbnail = findThumbnail(page, html);
+            return normalizedResult(
+                    page,
+                    media,
+                    clean(title, filename(media.getFirst())),
+                    clean(site, page.getHost()),
+                    "",
+                    thumbnail == null ? null : thumbnail.toString());
         } catch (ResponseStatusException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -93,7 +110,7 @@ class WebMediaResolverRepository {
         return http.send(request, HttpResponse.BodyHandlers.ofInputStream());
     }
 
-    private URI findMedia(URI page, String html) {
+    private List<URI> findMedia(URI page, String html) {
         var candidates = new LinkedHashSet<URI>();
         for (Pattern pattern : MEDIA_PATTERNS) {
             Matcher matcher = pattern.matcher(html);
@@ -105,7 +122,9 @@ class WebMediaResolverRepository {
                         // A template is player configuration, not a media
                         // response. The concrete request is captured by the
                         // mobile browser when playback actually starts.
-                        if (!isUnresolvedTemplate(candidate)) candidates.add(candidate);
+                        if (!isUnresolvedTemplate(candidate) && isAllowedMediaCandidate(page, candidate)) {
+                            candidates.add(candidate);
+                        }
                     }
                 } catch (Exception ignored) { }
             }
@@ -115,8 +134,46 @@ class WebMediaResolverRepository {
         // stream first; that can overwhelm Android emulators and lower-end
         // phones even though a compatible 360p/240p rendition is available.
         return new ArrayList<>(candidates).stream()
-                .min(Comparator.comparingInt(this::mobilePlaybackRank))
-                .orElse(null);
+                .sorted(Comparator.comparingInt(this::mobilePlaybackRank))
+                .toList();
+    }
+
+    private URI findThumbnail(URI page, String html) {
+        for (Pattern pattern : THUMBNAIL_PATTERNS) {
+            Matcher matcher = pattern.matcher(html);
+            if (!matcher.find()) continue;
+            try {
+                URI candidate = validatePublicHttps(page.resolve(decode(matcher.group(1))));
+                if (!isKnownAd(candidate)) return candidate;
+            } catch (Exception ignored) { }
+        }
+        return null;
+    }
+
+    boolean isAllowedMediaCandidate(URI page, URI candidate) {
+        if (isKnownAd(candidate)) return false;
+        String pageHost = lower(page.getHost());
+        if (!pageHost.contains("xhamster")) return true;
+        String mediaHost = lower(candidate.getHost());
+        return List.of("xhamster.com", "xhcdn.com", "xhpingcdn.com", "xhmediacdn.com")
+                .stream().anyMatch(domain -> mediaHost.equals(domain) || mediaHost.endsWith("." + domain));
+    }
+
+    private boolean isKnownAd(URI candidate) {
+        String host = lower(candidate.getHost());
+        String value = candidate.toString().toLowerCase(Locale.ROOT);
+        return host.contains("flirtify.com")
+                || host.contains("doubleclick.net")
+                || host.contains("googlesyndication.com")
+                || host.contains("googleadservices.com")
+                || value.contains("/preroll")
+                || value.contains("/pre-roll")
+                || value.contains("/video-ad")
+                || value.contains("/vast/");
+    }
+
+    private static String lower(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
 
     int mobilePlaybackRank(URI candidate) {
@@ -175,9 +232,93 @@ class WebMediaResolverRepository {
         return uri;
     }
 
-    private ResolvedWebMedia result(URI page, URI media, String title, String site, String contentType) {
-        String provider = isHls(media.toString(), contentType) ? "DIRECT_HLS" : "DIRECT_MP4";
-        return new ResolvedWebMedia(page.toString(), media.toString(), provider, title, site);
+    private ResolvedWebMedia result(
+            URI page,
+            URI media,
+            String title,
+            String site,
+            String contentType,
+            String thumbnailUrl) {
+        return normalizedResult(page, List.of(media), title, site, contentType, thumbnailUrl);
+    }
+
+    ResolvedWebMedia normalizedResult(
+            URI page,
+            List<URI> media,
+            String title,
+            String site,
+            String contentType,
+            String thumbnailUrl) {
+        List<WebMediaSource> sources = media.stream()
+                .map(candidate -> webMediaSource(page, candidate, contentType))
+                .toList();
+        WebMediaSource primary = sources.getFirst();
+        Long streamExpiry = media.stream()
+                .map(this::streamExpiry)
+                .filter(value -> value != null)
+                .min(Long::compareTo)
+                .orElse(null);
+        String stablePageUrl = page.toString();
+        return new ResolvedWebMedia(
+                stablePageUrl,
+                stablePageUrl,
+                primary.url(),
+                primary.sourceType(),
+                title,
+                site,
+                thumbnailUrl,
+                streamExpiry,
+                sources);
+    }
+
+    WebMediaSource webMediaSource(URI page, URI media, String contentType) {
+        String sourceType = isHls(media.toString(), contentType) ? "DIRECT_HLS" : "DIRECT_MP4";
+        return new WebMediaSource(
+                media.toString(),
+                sourceType,
+                mediaQuality(media),
+                safePlaybackHeaders(page, media));
+    }
+
+    Map<String, String> safePlaybackHeaders(URI page, URI media) {
+        if (page.getHost() == null || media.getHost() == null || page.equals(media)) return Map.of();
+        // Do not expose the selected page path/query or any browser cookies to a
+        // media host. These origin-scoped values are the same non-secret request
+        // context a browser normally supplies for an embedded media request.
+        String origin = page.getScheme() + "://" + page.getHost()
+                + (page.getPort() == -1 ? "" : ":" + page.getPort());
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Referer", origin + "/");
+        headers.put("Origin", origin);
+        headers.put("User-Agent", MEDIA_USER_AGENT);
+        return Map.copyOf(headers);
+    }
+
+    String mediaQuality(URI media) {
+        Matcher matcher = Pattern.compile("(?i)(?:^|[^0-9])(144|240|360|480|720|1080|1440|2160)p(?:[^0-9]|$)")
+                .matcher(media.toString());
+        return matcher.find() ? matcher.group(1) + "p" : null;
+    }
+
+    Long streamExpiry(URI media) {
+        String query = media.getRawQuery();
+        if (query == null || query.isBlank()) return null;
+        for (String item : query.split("&")) {
+            int separator = item.indexOf('=');
+            if (separator <= 0 || separator == item.length() - 1) continue;
+            String key = item.substring(0, separator).toLowerCase(Locale.ROOT);
+            if (!key.equals("expire") && !key.equals("expires") && !key.equals("exp")) continue;
+            String raw = item.substring(separator + 1);
+            if (!raw.matches("[0-9]{9,13}")) continue;
+            try {
+                long value = Long.parseLong(raw);
+                if (value > 9_999_999_999L) value /= 1000;
+                long lowerBound = Instant.parse("2000-01-01T00:00:00Z").getEpochSecond();
+                long upperBound = Instant.parse("2100-01-01T00:00:00Z").getEpochSecond();
+                if (value >= lowerBound && value <= upperBound) return value;
+            } catch (NumberFormatException ignored) { }
+        }
+        return null;
     }
 
     private static boolean isHls(String url, String type) {
@@ -220,5 +361,20 @@ class WebMediaResolverRepository {
     }
 
     public record ResolveWebMediaRequest(@NotBlank String pageUrl) { }
-    public record ResolvedWebMedia(String pageUrl, String sourceUrl, String sourceType, String title, String siteName) { }
+    public record ResolvedWebMedia(
+            String resourceId,
+            String pageUrl,
+            String sourceUrl,
+            String sourceType,
+            String title,
+            String siteName,
+            String thumbnailUrl,
+            Long streamExpiry,
+            List<WebMediaSource> sources) { }
+
+    public record WebMediaSource(
+            String url,
+            String sourceType,
+            String quality,
+            Map<String, String> httpHeaders) { }
 }

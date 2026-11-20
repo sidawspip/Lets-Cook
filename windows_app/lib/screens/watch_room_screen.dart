@@ -6,17 +6,22 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:livekit_client/livekit_client.dart'
+    show VideoTrackRenderer, VideoViewFit;
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_windows/webview_windows.dart' as windows_webview;
 
 import '../models/models.dart';
 import '../services/media_resolver.dart';
+import '../services/room_voice_service.dart' show VoiceMember;
 import '../state/watch_party_controller.dart';
 import 'media_discovery_screen.dart';
 import '../theme/app_theme.dart';
 import '../services/device_features.dart';
 import '../widgets/media_preview.dart';
+import '../widgets/screen_share_confirmation.dart';
+import '../widgets/wave_loader.dart';
 import 'home_screen.dart';
 import 'user_profile_screen.dart';
 
@@ -107,6 +112,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   Timer? _telemetry;
   Timer? _controlsTimer;
   String? _loadedMediaKey;
+  String? _durationReportedMediaKey;
   double _position = 0;
   double _duration = 0;
   bool _sampling = false;
@@ -126,13 +132,47 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   String _captionText = '';
   String? _endedMediaKey;
   DateTime _lastProgressAt = DateTime.now();
+  DateTime _lastHardSyncAt = DateTime.fromMillisecondsSinceEpoch(0);
   double _lastObservedPosition = -1;
   bool _stallReported = false;
+  int _stallRecoveryAttempts = 0;
+  bool _recoveringStall = false;
   final _playerRevision = ValueNotifier<int>(0);
   final _videoSurfaceKey = GlobalKey(debugLabel: 'room-video-surface');
   Offset? _videoGestureStart;
   Offset _videoGestureDelta = Offset.zero;
   bool _viewerLoginConfirmed = false;
+  final Set<String> _seenShareRequests = {};
+  bool _shareDialogOpen = false;
+
+  void _checkShareRequests() {
+    unawaited(_restoreLocalAudio());
+    if (widget.controller.screenShareApproved && mounted) { widget.controller.screenShareApproved = false; WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Host approved screen sharing. Tap Share screen to start.'))); }); }
+    if (widget.controller.unmuteRequested && mounted) {
+      widget.controller.unmuteRequested = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        final accept = await showDialog<bool>(context: context, builder: (context) => AlertDialog(title: const Text('The host asked you to unmute'), content: const Text('Your microphone will turn on only if you accept.'), actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep muted')), FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Turn on microphone'))]));
+        if (accept == true && widget.controller.activeRoom != null && !widget.controller.voice.microphoneEnabled) await widget.controller.voice.toggleMicrophone(widget.controller.activeRoom!.id);
+      });
+    }
+    final room = widget.controller.activeRoom;
+    final me = widget.controller.activeParticipants.where((person) => person['userId']?.toString() == widget.controller.profile?.id).firstOrNull;
+    if (room?.role != 'HOST' && widget.controller.voice.screenShareEnabled && me?['canShareScreen'] != true && room != null) unawaited(widget.controller.voice.toggleScreenShare(room.id));
+    if (!mounted || room?.role != 'HOST' || _shareDialogOpen) return;
+    final pending = widget.controller.activeParticipants.where((person) => person['screenShareRequested'] == true && !_seenShareRequests.contains(person['userId']?.toString())).firstOrNull;
+    if (pending == null) return;
+    final userId = pending['userId']?.toString();
+    if (userId == null) return;
+    _seenShareRequests.add(userId);
+    _shareDialogOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final allow = await showDialog<bool>(context: context, builder: (context) => AlertDialog(title: const Text('Screen share request'), content: Text('${pending['displayName'] ?? 'A member'} wants to share a screen.'), actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Decline')), FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Allow'))]));
+      _shareDialogOpen = false;
+      if (allow != null) await widget.controller.api.setScreenPermission(room!.id, userId, allow);
+    });
+  }
 
   bool _usesProviderBrowser(RoomWatchState? state) =>
       state != null &&
@@ -140,7 +180,9 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   bool get _videoAccessReady =>
       widget.controller.canControlWatch ||
-      (widget.controller.canViewVideo && _viewerLoginConfirmed);
+      (widget.controller.canViewVideo &&
+          (!_usesProviderBrowser(widget.controller.watchState) ||
+              _viewerLoginConfirmed));
 
   @override
   void initState() {
@@ -148,6 +190,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     WidgetsBinding.instance.addObserver(this);
     DeviceFeatures.onPipModeChanged(_handlePipModeChanged);
     _syncAutoPip();
+    widget.controller.addListener(_checkShareRequests);
     _ensureVideo();
     _telemetry = Timer.periodic(
       const Duration(seconds: 1),
@@ -163,7 +206,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   Future<void> _ensureVideo() async {
     if (!_videoAccessReady) return;
-    final state = widget.controller.watchState;
+    var state = widget.controller.watchState;
     final key = state == null
         ? null
         : '${state.provider}:${state.mediaId}:${state.sourceUrl ?? ''}';
@@ -184,6 +227,25 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     });
     VideoPlayerController? candidate;
     try {
+      final pageUri = Uri.tryParse(state.mediaId);
+      final streamUri = Uri.tryParse(state.sourceUrl ?? '');
+      final isRefreshableWeb =
+          state.provider.toUpperCase().startsWith('DIRECT_') &&
+          pageUri?.scheme == 'https' &&
+          pageUri?.host.isNotEmpty == true &&
+          streamUri?.scheme == 'https' &&
+          state.mediaId != state.sourceUrl;
+      if (isRefreshableWeb &&
+          !await probeDirectMedia(
+            streamUri!,
+            sourceType: state.sourceType,
+            sourcePage: pageUri,
+          )) {
+        await widget.controller.refreshExpiredWebMedia();
+        state = widget.controller.watchState ?? state;
+        _loadedMediaKey =
+            '${state.provider}:${state.mediaId}:${state.sourceUrl ?? ''}';
+      }
       final media = await _resolver.resolve(
         state,
         quality: widget.controller.selectedQuality,
@@ -225,9 +287,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
           Duration.millisecondsPerSecond;
       final requestedPosition = state.positionSeconds;
       final startPosition = mediaDurationSeconds > 0
-          ? (state.playing && requestedPosition >= mediaDurationSeconds - .5
-                ? 0.0
-                : requestedPosition.clamp(0.0, mediaDurationSeconds))
+          ? requestedPosition.clamp(0.0, mediaDurationSeconds)
           : requestedPosition.clamp(0.0, double.infinity);
       await candidate.seekTo(
         Duration(milliseconds: (startPosition * 1000).round()),
@@ -247,8 +307,16 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
       _lastProgressAt = DateTime.now();
       _stallReported = false;
       await _restoreLocalAudio();
-      if (state.playing) await _player!.play();
-      if (!state.playing) _playbackReady = true;
+      if (state.playing &&
+          (mediaDurationSeconds <= 0 ||
+              startPosition < mediaDurationSeconds - .5)) {
+        await _player!.play().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => debugPrint('Player start is still buffering'),
+        );
+      } else {
+        _playbackReady = true;
+      }
       _syncAutoPip();
       await _syncWakeLock();
     } catch (error) {
@@ -362,7 +430,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     if (snapshot['found'] != true) {
       setState(() {
         _playerError =
-            'Open and start the video on this provider page. Lets Cook will synchronize it when the player appears.';
+            'Open and start the video on this provider page. Xynk will synchronize it when the player appears.';
       });
       return;
     }
@@ -376,8 +444,9 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   Future<void> _restoreLocalAudio() async {
     final player = _player;
     if (player == null) return;
+    final speaking = widget.controller.voice.members.any((member) => member.speaking && member.identity != widget.controller.voice.localIdentity);
     await player.setVolume(
-      widget.controller.muted ? 0 : widget.controller.volume,
+      widget.controller.muted ? 0 : widget.controller.volume * (speaking ? .65 : 1),
     );
   }
 
@@ -411,11 +480,27 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
       }
       final current = player.value.position.inMilliseconds / 1000;
       final duration = player.value.duration.inMilliseconds / 1000;
+      if (duration > 0 &&
+          widget.controller.canControlWatch &&
+          desired.durationSeconds == null &&
+          _durationReportedMediaKey != _loadedMediaKey) {
+        _durationReportedMediaKey = _loadedMediaKey;
+        unawaited(
+          widget.controller
+              .reportMediaDuration(desired.mediaId, duration)
+              .catchError((Object error) {
+                _durationReportedMediaKey = null;
+                debugPrint('Duration sync failed: $error');
+              }),
+        );
+      }
       final now = DateTime.now();
       if ((current - _lastObservedPosition).abs() >= .15) {
         _lastObservedPosition = current;
         _lastProgressAt = now;
         _playbackReady = true;
+        _stallRecoveryAttempts = 0;
+        _stallReported = false;
       }
       if (mounted) {
         setState(() {
@@ -430,15 +515,29 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
           ? rawTarget.clamp(0.0, duration)
           : rawTarget.clamp(0.0, double.infinity);
       final drift = (current - target).abs();
-      if (drift > 2) {
-        await player.seekTo(Duration(milliseconds: (target * 1000).round()));
-      }
-      if (desired.playing && !player.value.isPlaying) await player.play();
       if (!desired.playing && player.value.isPlaying) await player.pause();
+      if (drift > 5 &&
+          _playbackReady &&
+          (drift > 15 ||
+              now.difference(_lastHardSyncAt) >= const Duration(seconds: 10)) &&
+          !player.value.isBuffering &&
+          !player.value.isCompleted &&
+          (duration <= 0 || target < duration - .5)) {
+        await player.seekTo(Duration(milliseconds: (target * 1000).round()));
+        _lastHardSyncAt = now;
+        _lastProgressAt = now;
+      }
+      if (desired.playing &&
+          !player.value.isPlaying &&
+          !player.value.isCompleted &&
+          (duration <= 0 || target < duration - .5)) {
+        await player.play();
+      }
       _syncAutoPip();
       await _syncWakeLock();
-      if (player.value.position >= player.value.duration &&
-          player.value.duration > Duration.zero) {
+      if (player.value.duration > Duration.zero &&
+          (player.value.isCompleted ||
+              player.value.position >= player.value.duration)) {
         if (_endedMediaKey != _loadedMediaKey) {
           _endedMediaKey = _loadedMediaKey;
           await player.pause();
@@ -453,10 +552,18 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
           widget.controller.openPostPlaybackShelf();
         }
       } else if (desired.playing &&
+          !_recoveringStall &&
           !_stallReported &&
-          now.difference(_lastProgressAt) >= const Duration(seconds: 15)) {
+          now.difference(_lastProgressAt) >=
+              (player.value.isBuffering
+                  ? const Duration(seconds: 25)
+                  : const Duration(seconds: 15))) {
         _stallReported = true;
-        if (mounted) {
+        if (_stallRecoveryAttempts < 2) {
+          _stallRecoveryAttempts++;
+          _recoveringStall = true;
+          unawaited(_retryVideo().whenComplete(() => _recoveringStall = false));
+        } else if (mounted) {
           setState(() {
             _playerError =
                 'The stream stopped advancing. Tap Retry video to reconnect.';
@@ -472,12 +579,14 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   Future<void> _retryVideo() async {
     if (_loading) return;
+    await widget.controller.refreshExpiredWebMedia();
     final failed = _player;
     _player = null;
     await _clearProviderBrowser();
     _loadedMediaKey = null;
     _playerError = null;
     _stallReported = false;
+    _lastProgressAt = DateTime.now();
     if (mounted) {
       setState(() {});
       await WidgetsBinding.instance.endOfFrame;
@@ -527,6 +636,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.controller.removeListener(_checkShareRequests);
     DeviceFeatures.onPipModeChanged(null);
     _nativeAutoPipEnabled = false;
     unawaited(DeviceFeatures.setPipAutoEnabled(false));
@@ -619,7 +729,11 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: Listenable.merge([widget.controller, _playerRevision]),
+    animation: Listenable.merge([
+      widget.controller,
+      widget.controller.voice,
+      _playerRevision,
+    ]),
     builder: (context, _) {
       if (!_videoAccessReady && _player != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _lockPlayer());
@@ -635,7 +749,14 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
         WidgetsBinding.instance.addPostFrameCallback((_) => _ensureVideo());
       }
       _syncAutoPip();
-      final player = _player?.value.isInitialized == true
+      final screenTrack = widget.controller.voice.screenTrack;
+      final player = screenTrack != null
+          ? VideoTrackRenderer(
+              screenTrack,
+              key: ObjectKey(screenTrack),
+              fit: VideoViewFit.contain,
+            )
+          : _player?.value.isInitialized == true
           ? VideoPlayer(_player!, key: _videoSurfaceKey)
           : _providerBrowser != null && _usesProviderBrowser(state)
           ? windows_webview.Webview(
@@ -765,7 +886,9 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
                 onPeople: () => setState(() => _peopleDrawerOpen = true),
               ),
               Expanded(
-                child: !_videoAccessReady
+                child: widget.controller.checkingVideoAccess
+                    ? const Center(child: WaveLoader(label: 'Joining room'))
+                    : !_videoAccessReady
                     ? _VideoAccessGate(
                         controller: widget.controller,
                         providerLabel: _sourceLabel(
@@ -777,13 +900,25 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
                         controller: widget.controller,
                         resolvedTitle: _resolvedTitle,
                         showLoading:
-                            _loading ||
+                            (_loading && !_playbackReady) ||
                             (_player != null &&
-                                (!_playbackReady ||
-                                    _player!.value.isBuffering)),
+                                (!_playbackReady &&
+                                        widget.controller.watchState?.playing ==
+                                            true ||
+                                    (_player!.value.isBuffering &&
+                                        widget.controller.watchState?.playing ==
+                                            true &&
+                                        DateTime.now().difference(
+                                              _lastProgressAt,
+                                            ) >=
+                                            const Duration(seconds: 3)))),
                         playerAspectRatio: _player?.value.isInitialized == true
                             ? _player!.value.aspectRatio
                             : 16 / 9,
+                        isScreenShare:
+                            widget.controller.voice.screenTrack != null,
+                        isLocalScreenShare:
+                            widget.controller.voice.screenShareEnabled,
                         showPicker: widget.controller.shelfOpen,
                         onToggleControls: _toggleControls,
                         player: widget.controller.shelfOpen
@@ -1002,7 +1137,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   Future<void> _toggleMute() async {
     final next = !widget.controller.muted;
     widget.controller.setMuted(next);
-    await _player?.setVolume(next ? 0 : widget.controller.volume);
+    await _restoreLocalAudio();
     try {
       await _providerBrowser?.executeScript(
         "document.querySelectorAll('video').forEach(v => v.muted = ${next ? 'true' : 'false'});",
@@ -1131,15 +1266,95 @@ class _RoomHeader extends StatelessWidget {
               icon: const Icon(Icons.tune_rounded),
               style: IconButton.styleFrom(backgroundColor: Colors.transparent),
             ),
-            const Expanded(
-              child: Text(
-                "LET'S COOK",
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2.2,
-                ),
+            Expanded(
+              child: ListenableBuilder(
+                listenable: Listenable.merge([controller, controller.voice]),
+                builder: (context, _) {
+                  final liveMembers = controller.voice.members
+                      .where((member) => member.microphoneOn)
+                      .toList();
+                  final myId = controller.profile?.id;
+                  final localIdentity = controller.voice.localIdentity;
+                  final members = [
+                    if (controller.voice.localMicrophoneActive)
+                      VoiceMember(
+                        localIdentity ?? myId ?? 'local',
+                        controller.displayName,
+                        true,
+                        controller.voice.localSpeaking,
+                      ),
+                    ...liveMembers.where(
+                      (member) =>
+                          member.identity != localIdentity &&
+                          member.identity != myId,
+                    ),
+                  ];
+                  if (members.isEmpty) {
+                    return const Text(
+                      'XYNK',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 21,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 2.2,
+                      ),
+                    );
+                  }
+                  return Center(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final member in members.take(6))
+                            Builder(
+                              builder: (context) {
+                                final isMe =
+                                    member.identity == localIdentity ||
+                                    member.identity == myId ||
+                                    member.identity == 'local';
+                                final person = controller.activeParticipants
+                                    .cast<Map<String, dynamic>?>()
+                                    .firstWhere(
+                                      (item) =>
+                                          item?['userId']?.toString() ==
+                                          member.identity,
+                                      orElse: () => null,
+                                    );
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 2,
+                                  ),
+                                  child: Tooltip(
+                                    message:
+                                        '${person?['displayName'] ?? member.name} · Mic on',
+                                    child: _HeaderVoiceAvatar(
+                                      name:
+                                          (person?['displayName'] ??
+                                                  member.name)
+                                              .toString(),
+                                      avatarUrl:
+                                          person?['avatarUrl']?.toString() ??
+                                          (isMe
+                                              ? controller.profile?.avatarUrl
+                                              : null),
+                                      isHost: person?['role'] == 'HOST',
+                                      speaking: member.speaking,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          if (members.length > 6)
+                            Text(
+                              '+${members.length - 6}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
             IconButton(
@@ -1183,6 +1398,147 @@ class _RoomHeader extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _HeaderVoiceAvatar extends StatefulWidget {
+  const _HeaderVoiceAvatar({
+    required this.name,
+    required this.avatarUrl,
+    required this.isHost,
+    required this.speaking,
+  });
+
+  final String name;
+  final String? avatarUrl;
+  final bool isHost;
+  final bool speaking;
+
+  @override
+  State<_HeaderVoiceAvatar> createState() => _HeaderVoiceAvatarState();
+}
+
+class _HeaderVoiceAvatarState extends State<_HeaderVoiceAvatar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 750),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.speaking) _pulse.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _HeaderVoiceAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.speaking == oldWidget.speaking) return;
+    if (widget.speaking) {
+      _pulse.repeat(reverse: true);
+    } else {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = widget.name.trim().isEmpty
+        ? '?'
+        : widget.name.trim()[0].toUpperCase();
+    final url = widget.avatarUrl?.trim() ?? '';
+    final resolvedUrl = url.startsWith('/') ? 'https://xynk.in$url' : url;
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, _) => Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF261B36),
+              border: Border.all(
+                color: widget.speaking
+                    ? const Color(0xFF67F5B4)
+                    : const Color(0xFF80638F),
+                width: widget.speaking ? 2 + _pulse.value : 1,
+              ),
+              boxShadow: widget.speaking
+                  ? [
+                      BoxShadow(
+                        color: const Color(
+                          0xFF67F5B4,
+                        ).withValues(alpha: .2 + _pulse.value * .4),
+                        blurRadius: 5 + _pulse.value * 9,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: ClipOval(
+              child: resolvedUrl.isEmpty
+                  ? ColoredBox(
+                      color: const Color(0xFF895DA8),
+                      child: Center(
+                        child: Text(
+                          initial,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    )
+                  : Image.network(
+                      resolvedUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Center(child: Text(initial)),
+                    ),
+            ),
+          ),
+          if (widget.speaking)
+            Positioned(
+              left: -9,
+              bottom: 5,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  for (final scale in [0.55, 1.0, 0.7])
+                    Container(
+                      width: 2.5,
+                      height: 5 + 10 * scale * (0.35 + _pulse.value * 0.65),
+                      margin: const EdgeInsets.symmetric(horizontal: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF67F5B4),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (widget.isHost)
+            const Positioned(
+              right: -1,
+              bottom: -1,
+              child: Icon(
+                Icons.star_rounded,
+                size: 14,
+                color: Color(0xFFFFD36D),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class RoomControlsSheet extends StatelessWidget {
@@ -1353,7 +1709,7 @@ class _RoomSourcePicker extends StatelessWidget {
                     ),
                     const Expanded(
                       child: Text(
-                        "LET'S COOK",
+                        "XYNK",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 23,
@@ -1603,6 +1959,8 @@ class _WatchMode extends StatelessWidget {
     required this.resolvedTitle,
     required this.showLoading,
     required this.playerAspectRatio,
+    required this.isScreenShare,
+    required this.isLocalScreenShare,
     required this.player,
     required this.showControls,
     required this.position,
@@ -1621,6 +1979,8 @@ class _WatchMode extends StatelessWidget {
   final String? resolvedTitle;
   final bool showLoading;
   final double playerAspectRatio;
+  final bool isScreenShare;
+  final bool isLocalScreenShare;
   final Widget? player;
   final bool showControls;
   final double position;
@@ -1639,6 +1999,7 @@ class _WatchMode extends StatelessWidget {
     final playerCard = _PlayerCard(
       compact: true,
       aspectRatio: playerAspectRatio,
+      expand: isScreenShare,
       player: Stack(
         fit: StackFit.expand,
         children: [
@@ -1651,6 +2012,24 @@ class _WatchMode extends StatelessWidget {
                 ),
               ),
           if (showLoading) const _PulsingVideoLoader(),
+          if (isLocalScreenShare)
+            const Positioned(
+              left: 10,
+              top: 10,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xCC131922),
+                  borderRadius: BorderRadius.all(Radius.circular(8)),
+                ),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  child: Text(
+                    'Sharing · chat beside you',
+                    style: TextStyle(color: Colors.white, fontSize: 11),
+                  ),
+                ),
+              ),
+            ),
           if (controller.watchState != null && !showPicker)
             GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -1675,7 +2054,8 @@ class _WatchMode extends StatelessWidget {
         ],
       ),
     );
-    final emptyPlayer = controller.watchState == null && !showPicker
+    final emptyPlayer =
+        controller.watchState == null && !showPicker && !isScreenShare
         ? _EmptyPlayer(onFindVideo: () => controller.setShelfOpen(true))
         : const SizedBox.shrink();
     return LayoutBuilder(
@@ -1702,13 +2082,23 @@ class _WatchMode extends StatelessWidget {
                         children: [
                           Expanded(
                             child: Center(
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxWidth: 980,
-                                  maxHeight: 620,
-                                ),
-                                child: playerCard,
-                              ),
+                              child: isLocalScreenShare
+                                  ? ConstrainedBox(
+                                      constraints: const BoxConstraints(
+                                        maxWidth: 480,
+                                        maxHeight: 270,
+                                      ),
+                                      child: playerCard,
+                                    )
+                                  : isScreenShare
+                                  ? SizedBox.expand(child: playerCard)
+                                  : ConstrainedBox(
+                                      constraints: const BoxConstraints(
+                                        maxWidth: 980,
+                                        maxHeight: 620,
+                                      ),
+                                      child: playerCard,
+                                    ),
                             ),
                           ),
                           emptyPlayer,
@@ -1739,17 +2129,23 @@ class _WatchMode extends StatelessWidget {
             playerAspectRatio.isFinite && playerAspectRatio >= 1.2
             ? playerAspectRatio.clamp(1.2, 2.5)
             : 16 / 9;
-        final playerHeight = math.min(
-          availableWidth / safeAspectRatio,
-          constraints.maxHeight * .28,
-        );
+        final playerHeight = isLocalScreenShare
+            ? math.min(constraints.maxHeight * .24, availableWidth / 2.2)
+            : isScreenShare
+            ? math.min(constraints.maxHeight * .5, availableWidth * 1.25)
+            : math.min(
+                availableWidth / safeAspectRatio,
+                constraints.maxHeight * .28,
+              );
         return Column(
           children: [
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Center(
                 child: SizedBox(
-                  width: playerHeight * safeAspectRatio,
+                  width: isScreenShare
+                      ? availableWidth
+                      : playerHeight * safeAspectRatio,
                   height: playerHeight,
                   child: playerCard,
                 ),
@@ -1982,11 +2378,13 @@ class _PlayerCard extends StatelessWidget {
     required this.player,
     this.compact = false,
     this.aspectRatio = 16 / 9,
+    this.expand = false,
   });
 
   final Widget? player;
   final bool compact;
   final double aspectRatio;
+  final bool expand;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -2003,83 +2401,29 @@ class _PlayerCard extends StatelessWidget {
         ),
       ],
     ),
-    child: AspectRatio(
-      aspectRatio: aspectRatio,
-      child:
-          player ??
-          const Center(
-            child: Icon(
-              Icons.ondemand_video_rounded,
-              size: 42,
-              color: AppColors.muted,
-            ),
+    child: expand
+        ? SizedBox.expand(child: player)
+        : AspectRatio(
+            aspectRatio: aspectRatio,
+            child:
+                player ??
+                const Center(
+                  child: Icon(
+                    Icons.ondemand_video_rounded,
+                    size: 42,
+                    color: AppColors.muted,
+                  ),
+                ),
           ),
-    ),
   );
 }
 
-class _PulsingVideoLoader extends StatefulWidget {
+class _PulsingVideoLoader extends StatelessWidget {
   const _PulsingVideoLoader();
 
   @override
-  State<_PulsingVideoLoader> createState() => _PulsingVideoLoaderState();
-}
-
-class _PulsingVideoLoaderState extends State<_PulsingVideoLoader>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat(reverse: true);
-  late final Animation<double> _scale = Tween<double>(
-    begin: .82,
-    end: 1.12,
-  ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => IgnorePointer(
-    child: ColoredBox(
-      color: const Color(0x88000000),
-      child: Center(
-        child: ScaleTransition(
-          scale: _scale,
-          child: Container(
-            width: 74,
-            height: 74,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xE61A1225),
-              border: Border.all(color: AppColors.lime, width: 2),
-              boxShadow: const [
-                BoxShadow(color: Color(0x779C5CFF), blurRadius: 24),
-              ],
-            ),
-            child: const Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.play_arrow_rounded, color: Colors.white, size: 30),
-                Text(
-                  'LOADING',
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 8,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.1,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
+  Widget build(BuildContext context) =>
+      const WaveLoader(label: 'Starting video', showScrim: true, size: 58);
 }
 
 class _RailLabel extends StatelessWidget {
@@ -2806,11 +3150,17 @@ class _ChatPanelState extends State<_ChatPanel> {
                   icon: Icon(
                     widget.controller.voice.speakerphoneEnabled
                         ? Icons.volume_up_rounded
-                        : Icons.hearing_rounded,
+                        : defaultTargetPlatform == TargetPlatform.windows
+                            ? Icons.volume_off_rounded
+                            : Icons.hearing_rounded,
                   ),
-                  tooltip: widget.controller.voice.speakerphoneEnabled
-                      ? 'Use phone earpiece'
-                      : 'Use speakerphone',
+                  tooltip: defaultTargetPlatform == TargetPlatform.windows
+                      ? (widget.controller.voice.speakerphoneEnabled
+                          ? 'Mute room voices'
+                          : 'Hear room voices')
+                      : (widget.controller.voice.speakerphoneEnabled
+                          ? 'Use phone earpiece'
+                          : 'Use speakerphone'),
                 ),
                 IconButton(
                   onPressed: widget.controller.voice.busy
@@ -2819,6 +3169,17 @@ class _ChatPanelState extends State<_ChatPanel> {
                           final room = widget.controller.activeRoom;
                           if (room == null) return;
                           try {
+                            final me = widget.controller.activeParticipants.where((person) => person['userId']?.toString() == widget.controller.profile?.id).firstOrNull;
+                            if (!widget.controller.voice.screenShareEnabled && room.role != 'HOST' && me?['canShareScreen'] != true) {
+                              if (me?['screenShareRequested'] != true) await widget.controller.api.requestScreenShare(room.id);
+                              if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Screen share request sent to the host.')));
+                              return;
+                            }
+                            if (!widget.controller.voice.screenShareEnabled &&
+                                !await confirmScreenShare(context)) {
+                              return;
+                            }
+                            if (!widget.controller.voice.screenShareEnabled && room.role != 'HOST') await widget.controller.voice.refreshPermissions(room.id);
                             await widget.controller.startScreenSharing(
                               targetRoomId: room.id,
                             );
@@ -4405,6 +4766,7 @@ class _PeoplePanelState extends State<_PeoplePanel> {
     );
     var friendNow = isFriend;
     var canAdd = person['canAddVideos'] == true;
+    var canShare = person['canShareScreen'] == true;
     var canView = person['canViewVideo'] == true;
     var accessRequested = person['videoAccessRequested'] == true;
     await showModalBottomSheet<void>(
@@ -4431,6 +4793,7 @@ class _PeoplePanelState extends State<_PeoplePanel> {
                 ),
                 if (!isMe) ...[
                   const SizedBox(height: 18),
+                  ListTile(title: Text(widget.controller.voice.isListeningTo(userId) ? 'Mute for me' : 'Listen again'), leading: const Icon(Icons.hearing_rounded), onTap: () async { await widget.controller.voice.toggleListeningTo(userId); if (context.mounted) Navigator.pop(sheetContext); }),
                   FilledButton.icon(
                     onPressed: () async {
                       if (friendNow) {
@@ -4451,6 +4814,8 @@ class _PeoplePanelState extends State<_PeoplePanel> {
                 ],
                 if (widget.controller.canControlWatch && !isMe) ...[
                   const Divider(height: 28),
+                  ListTile(title: const Text('Microphone'), subtitle: const Text('Mute now or ask the member to unmute'), trailing: PopupMenuButton<String>(onSelected: (action) async { final room = widget.controller.activeRoom; if (room != null) await widget.controller.api.hostMicAction(room.id, userId, action); }, itemBuilder: (_) => const [PopupMenuItem(value: 'MUTE', child: Text('Mute microphone')), PopupMenuItem(value: 'REQUEST_UNMUTE', child: Text('Ask to unmute'))])),
+                  SwitchListTile(value: canShare, title: Text(person['screenShareRequested'] == true ? 'Screen share requested' : 'Can share screen'), subtitle: const Text('Only the host grants screen sharing'), onChanged: (value) async { final room = widget.controller.activeRoom; if (room == null) return; await widget.controller.api.setScreenPermission(room.id, userId, value); setSheetState(() => canShare = value); await _load(); }),
                   SwitchListTile(
                     value: canAdd,
                     title: const Text('Can add videos'),
@@ -4501,6 +4866,7 @@ class _PeoplePanelState extends State<_PeoplePanel> {
                     },
                   ),
                 ],
+                if (!isMe && (widget.controller.activeRoom?.role == 'HOST' || (widget.controller.activeRoom?.role == 'CO_HOST' && person['role'] == 'MEMBER'))) TextButton.icon(onPressed: () async { final room = widget.controller.activeRoom; if (room == null) return; await widget.controller.api.kickRoomMember(room.id, userId); if (context.mounted) Navigator.pop(sheetContext); await _load(); }, icon: const Icon(Icons.person_remove_rounded), label: const Text('Remove from room')),
               ],
             ),
           ),
@@ -4512,7 +4878,7 @@ class _PeoplePanelState extends State<_PeoplePanel> {
   Widget _participantTile(Map<String, dynamic> person) {
     final userId = (person['userId'] ?? person['id'])?.toString() ?? '';
     final canManage =
-        widget.controller.canControlWatch &&
+        (widget.controller.canControlWatch || (widget.controller.activeRoom?.role == 'CO_HOST' && person['role'] == 'MEMBER')) &&
         userId.isNotEmpty &&
         userId != widget.controller.profile?.id;
     return ListTile(
@@ -5262,6 +5628,8 @@ class _PartyGlow extends StatelessWidget {
 String _time(double seconds) {
   if (!seconds.isFinite || seconds < 0) return '0:00';
   final total = seconds.floor();
-  final minutes = total ~/ 60;
-  return '$minutes:${(total % 60).toString().padLeft(2, '0')}';
+  final minutes = (total ~/ 60) % 60;
+  final clock = '$minutes:${(total % 60).toString().padLeft(2, '0')}';
+  final hours = total ~/ 3600;
+  return hours > 0 ? '$hours:${clock.padLeft(5, '0')}' : clock;
 }

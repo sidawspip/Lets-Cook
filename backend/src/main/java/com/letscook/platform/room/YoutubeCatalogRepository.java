@@ -6,8 +6,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import org.springframework.web.client.RestClient;
@@ -22,9 +22,33 @@ import tools.jackson.databind.JsonNode;
 public class YoutubeCatalogRepository {
     private final String apiKey;
     private final RestClient rest = RestClient.create();
+    private final ConcurrentHashMap<String, Double> durationCache = new ConcurrentHashMap<>();
 
     public YoutubeCatalogRepository(@Value("${app.youtube.api-key:}") String apiKey) {
         this.apiKey = apiKey;
+    }
+
+    public Double durationSeconds(String videoId) {
+        if (apiKey.isBlank() || videoId == null || !videoId.matches("[A-Za-z0-9_-]{11}")) return null;
+        Double cached = durationCache.get(videoId);
+        if (cached != null) return cached;
+        try {
+            JsonNode details = rest.get().uri(UriComponentsBuilder
+                            .fromUriString("https://www.googleapis.com/youtube/v3/videos")
+                            .queryParam("part", "contentDetails")
+                            .queryParam("id", videoId)
+                            .queryParam("key", apiKey.trim())
+                            .build().encode().toUri())
+                    .retrieve().body(JsonNode.class);
+            if (details == null || details.path("items").isEmpty()) return null;
+            double seconds = Duration.parse(details.path("items").get(0)
+                    .path("contentDetails").path("duration").asText()).toSeconds();
+            if (seconds <= 0) return null;
+            durationCache.put(videoId, seconds);
+            return seconds;
+        } catch (RuntimeException exception) {
+            return null;
+        }
     }
 
     public SearchResponse search(String query, String pageToken) {
@@ -86,7 +110,7 @@ public class YoutubeCatalogRepository {
         if (ids.isEmpty()) return normal;
         JsonNode details = rest.get().uri(UriComponentsBuilder
                         .fromUriString("https://www.googleapis.com/youtube/v3/videos")
-                        .queryParam("part", "contentDetails,snippet")
+                        .queryParam("part", "contentDetails")
                         .queryParam("id", String.join(",", ids))
                         .queryParam("key", apiKey.trim())
                         .build().encode().toUri())
@@ -94,16 +118,11 @@ public class YoutubeCatalogRepository {
         if (details == null) return normal;
         for (JsonNode video : details.path("items")) {
             String duration = video.path("contentDetails").path("duration").asText();
-            JsonNode snippet = video.path("snippet");
-            String metadata = (snippet.path("title").asText() + " "
-                            + snippet.path("description").asText() + " "
-                            + snippet.path("tags").toString())
-                    .toLowerCase(Locale.ROOT);
             try {
                 long seconds = Duration.parse(duration).toSeconds();
-                boolean shortsSignal = metadata.matches(
-                        "(?s).*(#shorts?\\b|youtube\\s+shorts?\\b|\\bshorts?\\s+video\\b|vertical\\s+video).*");
-                if (seconds == 0 || seconds > 180 || !shortsSignal) {
+                // The search API has no Shorts flag. Metadata often omits the
+                // word "Shorts", so duration is the only reliable catalog filter.
+                if (seconds > 180) {
                     normal.add(video.path("id").asText());
                 }
             } catch (Exception ignored) {

@@ -57,6 +57,7 @@ class WatchQueueServiceImplTest {
                 queueId,
                 "NETFLIX",
                 "https://www.netflix.com/watch/123",
+                "https://www.netflix.com/watch/123",
                 "Selected title",
                 userId,
                 Instant.now(),

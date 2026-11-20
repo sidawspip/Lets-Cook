@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:http/http.dart' as http;
 import 'package:flutter_appauth/flutter_appauth.dart';
@@ -47,6 +48,7 @@ class LetsCookApi {
   final http.Client _client;
   StoredSession? _session;
   Future<void>? _refreshInFlight;
+  Timer? _sessionRefreshTimer;
   static const _networkTimeout = Duration(seconds: 12);
   static const _appAuth = FlutterAppAuth();
   static final _googleSignIn = GoogleSignIn.instance;
@@ -64,11 +66,38 @@ class LetsCookApi {
     if (_session == null) return false;
     try {
       await _ensureFreshToken();
+      if (_session == null) return false;
+      startSessionRefresh();
       return true;
-    } catch (_) {
+    } on ApiException catch (exception) {
+      if (exception.statusCode != 401) rethrow;
       await logout();
       return false;
+    } catch (_) {
+      // A temporary outage must not erase the refresh token on disk.
+      startSessionRefresh();
+      return true;
     }
+  }
+
+  void startSessionRefresh() {
+    _sessionRefreshTimer?.cancel();
+    if (_session == null) return;
+    _sessionRefreshTimer = Timer.periodic(const Duration(minutes: 1), (
+      _,
+    ) async {
+      try {
+        await _ensureFreshToken();
+      } catch (_) {
+        // Keep the stored session for a later network retry. A revoked token
+        // is handled when the user next makes an authenticated request.
+      }
+    });
+  }
+
+  void dispose() {
+    _sessionRefreshTimer?.cancel();
+    _client.close();
   }
 
   Future<void> login(String username, String password) async {
@@ -83,7 +112,7 @@ class LetsCookApi {
             'grant_type': 'password',
             'username': username,
             'password': password,
-            'scope': 'openid profile email',
+            'scope': 'openid profile email offline_access',
           },
         )
         .timeout(_networkTimeout);
@@ -93,13 +122,25 @@ class LetsCookApi {
       );
     }
     await _acceptTokenResponse(response);
+    startSessionRefresh();
   }
 
   Future<void> loginWithIdentityProvider(String provider) async {
     if (provider == 'google') {
-      await _loginWithNativeGoogle(interactive: true);
-      return;
+      try {
+        await _loginWithNativeGoogle(interactive: true);
+        return;
+      } catch (_) {
+        // Google requires a package/signing-certificate OAuth registration for
+        // its native account chooser. Keep the secure Keycloak broker as a
+        // fallback so debug, sideloaded, and newly signed builds can still log
+        // in without placing Google inside a blocked embedded WebView.
+      }
     }
+    await _loginWithBroker(provider);
+  }
+
+  Future<void> _loginWithBroker(String provider) async {
     final result = await _appAuth.authorizeAndExchangeCode(
       AuthorizationTokenRequest(
         AppConfig.clientId,
@@ -124,9 +165,11 @@ class LetsCookApi {
           DateTime.now().add(const Duration(minutes: 5)),
     );
     await _store.saveSession(_session!);
+    startSessionRefresh();
   }
 
   Future<void> logout() async {
+    _sessionRefreshTimer?.cancel();
     final nativeGoogle = _session?.refreshToken == _nativeGoogleSession;
     _session = null;
     await _store.clearSession();
@@ -135,12 +178,15 @@ class LetsCookApi {
         await _initializeGoogle();
         await _googleSignIn.signOut();
       } catch (_) {
-        // The local app session is already cleared; Google sign-out is best effort.
+        // The Xynk session is already cleared.
       }
     }
   }
 
-  Future<void> _loginWithNativeGoogle({required bool interactive}) async {
+  Future<void> _loginWithNativeGoogle({
+    required bool interactive,
+    StoredSession? expectedSession,
+  }) async {
     await _initializeGoogle();
     GoogleSignInAccount? account;
     if (interactive) {
@@ -166,20 +212,15 @@ class LetsCookApi {
         )
         .timeout(_networkTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      String? message;
-      try {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        message = (json['detail'] ?? json['message'] ?? json['error'])
-            ?.toString();
-      } catch (_) {}
       throw ApiException(
-        message?.isNotEmpty == true
-            ? message!
-            : 'Native Google sign-in failed (${response.statusCode}).',
+        'Native Google sign-in failed (${response.statusCode}).',
         response.statusCode,
       );
     }
+    if (expectedSession != null && !identical(_session, expectedSession))
+      return;
     await _acceptTokenResponse(response);
+    startSessionRefresh();
   }
 
   static Future<void> _initializeGoogle() => _googleInitialization ??=
@@ -335,6 +376,7 @@ class LetsCookApi {
     required String title,
     String? thumbnailUrl,
     String? sourceUrl,
+    String? sourceType,
     int watchSeconds = 0,
   }) async =>
       await _jsonRequest(
@@ -346,6 +388,7 @@ class LetsCookApi {
               'title': title,
               'thumbnailUrl': thumbnailUrl,
               'sourceUrl': sourceUrl,
+              'sourceType': sourceType,
               'watchSeconds': watchSeconds,
             },
           )
@@ -396,7 +439,7 @@ class LetsCookApi {
               '/rooms',
               body: {
                 'name': name,
-                'description': "A Let's Cook watch party",
+                'description': "A Xynk watch party",
                 'accessPolicy': 'OPEN',
                 'approvalRequired': false,
                 'maxMembers': 50,
@@ -439,6 +482,45 @@ class LetsCookApi {
     await _jsonRequest('POST', '/rooms/$roomId/media-token', body: const {})
         as Map<String, dynamic>,
   );
+
+  Future<void> requestScreenShare(String roomId) async {
+    await _jsonRequest(
+      'POST',
+      '/rooms/$roomId/screen-share-request',
+      body: const {},
+    );
+  }
+
+  Future<void> setScreenPermission(
+    String roomId,
+    String userId,
+    bool allowed,
+  ) async {
+    await _jsonRequest(
+      'POST',
+      '/rooms/$roomId/members/${Uri.encodeComponent(userId)}/screen-permission',
+      body: {'allowed': allowed},
+    );
+  }
+
+  Future<void> hostMicAction(
+    String roomId,
+    String userId,
+    String action,
+  ) async {
+    await _jsonRequest(
+      'POST',
+      '/rooms/$roomId/members/${Uri.encodeComponent(userId)}/microphone-action',
+      body: {'action': action},
+    );
+  }
+
+  Future<void> kickRoomMember(String roomId, String userId) async {
+    await _jsonRequest(
+      'DELETE',
+      '/rooms/$roomId/members/${Uri.encodeComponent(userId)}',
+    );
+  }
 
   Future<List<Map<String, dynamic>>> liveParticipants(String roomId) async =>
       (await _jsonRequest('GET', '/rooms/$roomId/live/participants')
@@ -631,7 +713,8 @@ class LetsCookApi {
   Future<QueueItem> addDirectToQueue(
     String roomId,
     String provider,
-    String url, {
+    String mediaId, {
+    String? sourceUrl,
     String? title,
     String? thumbnailUrl,
   }) async {
@@ -641,12 +724,13 @@ class LetsCookApi {
               '/rooms/$roomId/watch/queue',
               body: {
                 'provider': provider,
-                'mediaId': url,
+                'mediaId': mediaId,
+                'sourceUrl': sourceUrl ?? mediaId,
                 'title': title?.trim().isNotEmpty == true
                     ? title!.trim()
-                    : Uri.parse(url).pathSegments.isEmpty
+                    : Uri.parse(mediaId).pathSegments.isEmpty
                     ? 'Direct video'
-                    : Uri.parse(url).pathSegments.last,
+                    : Uri.parse(mediaId).pathSegments.last,
                 'thumbnailUrl': thumbnailUrl,
               },
             )
@@ -719,6 +803,7 @@ class LetsCookApi {
         'title': state.title,
         'playing': state.playing,
         'positionSeconds': state.positionSeconds,
+        'durationSeconds': state.durationSeconds,
         'playbackRate': 1.0,
       },
     );
@@ -807,7 +892,10 @@ class LetsCookApi {
 
   Future<void> _performTokenRefresh(StoredSession session) async {
     if (session.refreshToken == _nativeGoogleSession) {
-      await _loginWithNativeGoogle(interactive: false);
+      await _loginWithNativeGoogle(
+        interactive: false,
+        expectedSession: session,
+      );
       return;
     }
     final response = await _client
@@ -826,6 +914,7 @@ class LetsCookApi {
     if (response.statusCode != 200) {
       throw const ApiException('Your session expired.', 401);
     }
+    if (!identical(_session, session)) return;
     await _acceptTokenResponse(response);
   }
 

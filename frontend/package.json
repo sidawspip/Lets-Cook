@@ -1,5 +1,5 @@
 {
-  "name": "lets-cook-web",
+  "name": "xynk-web",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -8,7 +8,7 @@
   "scripts": {
     "start": "ng serve --host 0.0.0.0",
     "build": "ng build",
-    "test": "ng test --watch=false"
+    "check": "ng build --configuration development"
   },
   "dependencies": {
     "@angular/common": "^22.2.0",

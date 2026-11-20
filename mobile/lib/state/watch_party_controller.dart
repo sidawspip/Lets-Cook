@@ -21,6 +21,8 @@ class ViewingActivity {
     required this.watchedAt,
     required this.sensitive,
     this.views = 1,
+    this.sourceUrl,
+    this.sourceType,
   });
 
   final String mediaId;
@@ -30,6 +32,8 @@ class ViewingActivity {
   final DateTime watchedAt;
   final bool sensitive;
   final int views;
+  final String? sourceUrl;
+  final String? sourceType;
 
   Map<String, dynamic> toJson() => {
     'mediaId': mediaId,
@@ -39,6 +43,8 @@ class ViewingActivity {
     'watchedAt': watchedAt.toIso8601String(),
     'sensitive': sensitive,
     'views': views,
+    'sourceUrl': sourceUrl,
+    'sourceType': sourceType,
   };
 
   factory ViewingActivity.fromJson(
@@ -52,6 +58,8 @@ class ViewingActivity {
         DateTime.tryParse(json['watchedAt'] as String? ?? '') ?? DateTime.now(),
     sensitive: (json['sensitive'] ?? false) as bool,
     views: (json['views'] as num? ?? json['playCount'] as num? ?? 1).toInt(),
+    sourceUrl: json['sourceUrl'] as String?,
+    sourceType: json['sourceType'] as String?,
   );
 }
 
@@ -77,6 +85,7 @@ class WatchPartyController extends ChangeNotifier {
   Profile? profile;
   List<PartyRoom> rooms = const [];
   PartyRoom? activeRoom;
+  List<Map<String, dynamic>> activeParticipants = const [];
   RoomWatchState? watchState;
   List<QueueItem> queue = const [];
   QueueItem? _lastRoomSelection;
@@ -84,8 +93,11 @@ class WatchPartyController extends ChangeNotifier {
   String queueMode = 'HOSTS_ONLY';
   bool canAddToQueue = false;
   bool canViewVideo = false;
+  bool checkingVideoAccess = false;
   bool videoAccessRequested = false;
   final Map<String, String> _resolvedMediaTitles = {};
+  String? _resolvedWebSourcesPage;
+  List<Map<String, dynamic>> _resolvedWebSources = const [];
   int _suggestionLoadRevision = 0;
   List<ChatMessage> messages = const [];
   ChatMessage? replyToMessage;
@@ -98,6 +110,8 @@ class WatchPartyController extends ChangeNotifier {
   Timer? _refreshTimer;
   Timer? _heartbeatTimer;
   bool _refreshing = false;
+  bool unmuteRequested = false;
+  bool screenShareApproved = false;
   bool _refreshingTimeline = false;
   bool reconnecting = false;
   bool _resumeInFlight = false;
@@ -277,6 +291,62 @@ class WatchPartyController extends ChangeNotifier {
     );
   }
 
+  Future<void> selectViewingActivity(
+    ViewingActivity item, {
+    String? targetRoomId,
+  }) async {
+    final sourceType = item.sourceType?.trim().toUpperCase();
+    var provider = const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(sourceType)
+        ? sourceType!
+        : item.provider.trim().toUpperCase();
+    var mediaId = item.mediaId;
+    var sourceUrl = item.sourceUrl?.trim();
+    final pageUri = Uri.tryParse(mediaId);
+    final directPage =
+        provider.startsWith('DIRECT_') &&
+        (sourceUrl == null || sourceUrl.isEmpty || sourceUrl == mediaId) &&
+        !(pageUri?.path.toLowerCase().endsWith('.mp4') ?? false) &&
+        !(pageUri?.path.toLowerCase().endsWith('.m3u8') ?? false);
+    if (provider == 'WEB' || directPage) {
+      busy = true;
+      error = null;
+      notifyListeners();
+      try {
+        final resolved = await api.resolveWebMedia(mediaId);
+        sourceUrl = (resolved['sourceUrl'] as String?)?.trim();
+        provider = (resolved['sourceType'] as String? ?? '').toUpperCase();
+        if (!const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(provider) ||
+            Uri.tryParse(sourceUrl ?? '')?.scheme != 'https') {
+          throw StateError('This saved page did not return a playable video.');
+        }
+      } catch (exception) {
+        error = exception.toString();
+        busy = false;
+        notifyListeners();
+        return;
+      }
+    }
+    if (provider == 'YOUTUBE') {
+      final uri = Uri.tryParse(mediaId);
+      mediaId =
+          uri?.queryParameters['v'] ??
+          (uri?.host == 'youtu.be' && uri!.pathSegments.isNotEmpty
+              ? uri.pathSegments.first
+              : mediaId);
+    }
+    await selectMediaResource(
+      MediaResource(
+        provider: provider,
+        mediaId: mediaId,
+        sourceUrl: sourceUrl,
+        sourcePageUrl: item.mediaId,
+        title: item.title,
+        thumbnailUrl: item.thumbnailUrl,
+      ),
+      targetRoomId: targetRoomId,
+    );
+  }
+
   Future<void> selectProviderMedia({
     required String provider,
     required String mediaId,
@@ -306,6 +376,7 @@ class WatchPartyController extends ChangeNotifier {
     String? sourceType,
     String? title,
     String? thumbnailUrl,
+    String? sourcePageUrl,
   }) async {
     final uri = Uri.tryParse(url.trim());
     final path = uri?.path.toLowerCase() ?? '';
@@ -325,9 +396,13 @@ class WatchPartyController extends ChangeNotifier {
     await selectMediaResource(
       MediaResource(
         provider: provider!,
-        mediaId: url.trim(),
+        mediaId: sourcePageUrl?.trim().isNotEmpty == true
+            ? sourcePageUrl!.trim()
+            : url.trim(),
+        sourceUrl: url.trim(),
         title: title?.trim().isNotEmpty == true ? title!.trim() : 'Web video',
         thumbnailUrl: thumbnailUrl,
+        sourcePageUrl: sourcePageUrl,
       ),
       targetRoomId: targetRoomId,
     );
@@ -363,14 +438,21 @@ class WatchPartyController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (const {'NETFLIX', 'PRIME_VIDEO', 'CRUNCHYROLL'}.contains(provider)) {
+    if (const {'NETFLIX', 'PRIME_VIDEO'}.contains(provider) ||
+        (provider == 'CRUNCHYROLL' &&
+            defaultTargetPlatform != TargetPlatform.android)) {
       error =
           'Protected DRM providers are disabled for now and will be added later.';
       notifyListeners();
       return;
     }
     if (resource.isDirect) {
-      final uri = Uri.tryParse(resource.mediaId.trim());
+      final uri = Uri.tryParse(
+        (resource.sourceUrl?.trim().isNotEmpty == true
+                ? resource.sourceUrl
+                : resource.mediaId)!
+            .trim(),
+      );
       if (uri?.scheme != 'https' ||
           !const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(provider)) {
         error = 'Enter a public HTTPS .mp4 or .m3u8 URL.';
@@ -420,15 +502,15 @@ class WatchPartyController extends ChangeNotifier {
         await openRoom(createdRoom);
         shelfOpen = false;
       } else if (activeRoom?.id == resolvedRoomId) {
-        final shouldStartNow = watchState == null;
-        if (canControlWatch && shouldStartNow) {
+        final shouldStartNow = watchState?.playing != true;
+        if (canAddToQueue && shouldStartNow) {
           watchState = await api.playQueueItem(resolvedRoomId, added.id);
           _watchReceivedAt = DateTime.now();
           await _syncDevicePip();
         }
         _setQueue(await api.watchQueue(resolvedRoomId));
         _syncActiveRoomPreview(knownThumbnail: resource.thumbnailUrl);
-        shelfOpen = !shouldStartNow || !canControlWatch;
+        shelfOpen = !shouldStartNow || !canAddToQueue;
       }
     } catch (exception) {
       error = exception.toString();
@@ -450,6 +532,7 @@ class WatchPartyController extends ChangeNotifier {
         roomId,
         resource.normalizedProvider,
         resource.mediaId.trim(),
+        sourceUrl: resource.sourceUrl,
         title: resource.title,
         thumbnailUrl: resource.thumbnailUrl,
       );
@@ -473,6 +556,18 @@ class WatchPartyController extends ChangeNotifier {
     return "$displayName's room $suffix";
   }
 
+  Map<String, PartyRoom> _mergeRoomLists(
+    List<PartyRoom> mine,
+    List<PartyRoom> publicRooms,
+  ) {
+    final membership = {for (final room in mine) room.id: room};
+    return {
+      ...membership,
+      for (final room in publicRooms)
+        room.id: room.copyWith(role: membership[room.id]?.role ?? room.role),
+    };
+  }
+
   Future<void> _loadAuthenticatedHome() async {
     await Future.wait([_loadActivityPreferences(), _loadProfilePreferences()]);
     final results = await Future.wait([
@@ -483,11 +578,7 @@ class WatchPartyController extends ChangeNotifier {
     profile = results[0] as Profile;
     final publicRooms = results[1] as List<PartyRoom>;
     final mine = results[2] as List<PartyRoom>;
-    final roomById = <String, PartyRoom>{
-      // Public-live entries carry current media preview data. Put them last so
-      // the basic membership entry cannot erase that richer room card state.
-      for (final room in [...mine, ...publicRooms]) room.id: room,
-    };
+    final roomById = _mergeRoomLists(mine, publicRooms);
     rooms = roomById.values.toList();
     await DeviceFeatures.requestNotifications();
     await _connectNotifications();
@@ -502,6 +593,23 @@ class WatchPartyController extends ChangeNotifier {
 
   Future<void> _connectNotifications() =>
       notificationStream.connect((event) async {
+        if (event['roomId']?.toString() == activeRoom?.id &&
+            event['type'] == 'HOST_MUTE') {
+          await voice.muteMicrophone(activeRoom!.id);
+          return;
+        }
+        if (event['roomId']?.toString() == activeRoom?.id &&
+            event['type'] == 'HOST_UNMUTE_REQUEST') {
+          unmuteRequested = true;
+          notifyListeners();
+          return;
+        }
+        if (event['roomId']?.toString() == activeRoom?.id &&
+            event['type'] == 'SCREEN_SHARE_APPROVED') {
+          screenShareApproved = true;
+          notifyListeners();
+          return;
+        }
         if (event['type'] == 'DIRECT_MESSAGE') {
           final senderId = event['senderId']?.toString();
           if (senderId != null && senderId.isNotEmpty) {
@@ -577,6 +685,22 @@ class WatchPartyController extends ChangeNotifier {
     _refreshingTimeline = true;
     try {
       messages = await api.roomChat(roomId, me.id);
+      final room = activeRoom;
+      if (room?.id == roomId) {
+        final participants = await api.liveParticipants(roomId);
+        final mine = participants.where(
+          (item) => item['userId']?.toString() == me.id,
+        );
+        if (mine.isNotEmpty) {
+          final role = mine.first['role']?.toString().toUpperCase();
+          if (role == 'HOST' && room!.role != 'HOST') {
+            activeRoom = room.copyWith(role: 'HOST');
+            await voice.refreshPermissions(roomId);
+          } else if (role == 'CO_HOST' || role == 'MEMBER') {
+            activeRoom = room!.copyWith(role: role);
+          }
+        }
+      }
       _removeDuplicateSuggestions();
       notifyListeners();
     } catch (_) {
@@ -594,6 +718,7 @@ class WatchPartyController extends ChangeNotifier {
     reconnecting = true;
     notifyListeners();
     try {
+      await api.accessToken();
       await _connectNotifications();
       final room = activeRoom;
       if (room != null) {
@@ -608,9 +733,7 @@ class WatchPartyController extends ChangeNotifier {
           api.publicRooms(),
           api.myRooms(),
         ]);
-        rooms = <String, PartyRoom>{
-          for (final item in [...latest[1], ...latest[0]]) item.id: item,
-        }.values.toList();
+        rooms = _mergeRoomLists(latest[1], latest[0]).values.toList();
       }
       error = null;
     } catch (exception) {
@@ -665,6 +788,7 @@ class WatchPartyController extends ChangeNotifier {
       final switchingRooms = activeRoom?.id != room.id;
       activeRoom = room;
       if (switchingRooms) {
+        activeParticipants = const [];
         watchState = null;
         queue = const [];
         messages = const [];
@@ -673,6 +797,7 @@ class WatchPartyController extends ChangeNotifier {
         canViewVideo = room.role == 'HOST' || room.role == 'CO_HOST';
         videoAccessRequested = false;
       }
+      checkingVideoAccess = !canViewVideo;
       // Transition to the room immediately so the player can mount while the
       // join, queue, chat, and sync requests finish in the background UI.
       notifyListeners();
@@ -680,15 +805,28 @@ class WatchPartyController extends ChangeNotifier {
         await api.unlockRoom(room.id, accessKey: accessKey);
       }
       await api.joinLiveRoom(room.id);
+      if (!room.joined) {
+        // Successful admission grants a new member viewing access. The live
+        // participant projection may still lag this write for one refresh.
+        canViewVideo = true;
+        checkingVideoAccess = false;
+        notifyListeners();
+      }
       await _refreshRoomData(loadSuggestions: true);
       // The player must receive the fetched watch state before optional
       // realtime/persistence setup, which can be slow on a cold emulator.
       notifyListeners();
       await _syncDevicePip();
       await _connectRoomSync(room.id);
+      try {
+        await voice.connect(room.id);
+      } catch (exception) {
+        debugPrint('Room screen media could not connect: $exception');
+      }
       await store.saveActiveRoomId(room.id);
       _startRefreshLoop();
     } catch (exception) {
+      checkingVideoAccess = false;
       activeRoom = null;
       error = restoring
           ? 'Your previous room is no longer available.'
@@ -703,11 +841,38 @@ class WatchPartyController extends ChangeNotifier {
     final room = activeRoom;
     final me = profile;
     if (room == null || me == null) return;
+    final participants = await api.liveParticipants(room.id);
+    activeParticipants = participants;
+    // Viewing access must appear as soon as membership is confirmed. A slow
+    // chat or queue response must not leave an admitted member behind the
+    // private-video gate while the remaining room data loads.
+    final myMembership = participants.cast<Map<String, dynamic>?>().firstWhere(
+      (item) => item?['userId']?.toString() == me.id,
+      orElse: () => null,
+    );
+    final liveRole = myMembership?['role']?.toString().toUpperCase();
+    if (liveRole == 'HOST' || liveRole == 'CO_HOST' || liveRole == 'MEMBER') {
+      activeRoom = room.copyWith(role: liveRole);
+      if (liveRole == 'HOST' && room.role != 'HOST') {
+        await voice.refreshPermissions(room.id);
+      }
+    }
+    canViewVideo =
+        canControlWatch ||
+        room.role == 'CO_HOST' ||
+        liveRole == 'HOST' ||
+        liveRole == 'CO_HOST' ||
+        myMembership?['canViewVideo'] == true;
+    // A just-admitted member can be absent from the first participant read.
+    // Keep the joining loader until membership is visible; only an explicit
+    // canViewVideo=false result should open the access gate.
+    checkingVideoAccess = myMembership == null && !canViewVideo;
+    videoAccessRequested = myMembership?['videoAccessRequested'] == true;
+    notifyListeners();
     final results = await Future.wait([
       api.watchState(room.id),
       api.watchQueueInfo(room.id),
       api.roomChat(room.id, me.id),
-      api.liveParticipants(room.id),
     ]);
     final previousId = watchState?.mediaId;
     watchState = results[0] as RoomWatchState?;
@@ -722,19 +887,6 @@ class WatchPartyController extends ChangeNotifier {
       ),
     );
     messages = results[2] as List<ChatMessage>;
-    final participants = results[3] as List<Map<String, dynamic>>;
-    final myMembership = participants.cast<Map<String, dynamic>?>().firstWhere(
-      (item) => item?['userId']?.toString() == me.id,
-      orElse: () => null,
-    );
-    final liveRole = myMembership?['role']?.toString().toUpperCase();
-    canViewVideo =
-        canControlWatch ||
-        room.role == 'CO_HOST' ||
-        liveRole == 'HOST' ||
-        liveRole == 'CO_HOST' ||
-        myMembership?['canViewVideo'] == true;
-    videoAccessRequested = myMembership?['videoAccessRequested'] == true;
     if (loadSuggestions || previousId != watchState?.mediaId) {
       final state = watchState;
       if (state == null) {
@@ -982,7 +1134,11 @@ class WatchPartyController extends ChangeNotifier {
         .where((item) => item.mediaId == video.videoId)
         .firstOrNull;
     if (existing != null) {
-      await selectQueueItem(existing);
+      if (canAddToQueue && watchState?.playing != true) {
+        await playQueueItem(existing);
+      } else {
+        await selectQueueItem(existing);
+      }
       suggestions = suggestions
           .where((item) => item.videoId != video.videoId)
           .toList();
@@ -995,8 +1151,12 @@ class WatchPartyController extends ChangeNotifier {
         video,
         personalQueueItem: false,
       );
-      _mergeQueueItem(added);
-      shelfOpen = true;
+      if (canAddToQueue && watchState?.playing != true) {
+        await playQueueItem(added);
+      } else {
+        _mergeQueueItem(added);
+        shelfOpen = true;
+      }
     }
     suggestions = suggestions
         .where((item) => item.videoId != video.videoId)
@@ -1018,6 +1178,8 @@ class WatchPartyController extends ChangeNotifier {
         channelTitle: watchState?.provider ?? 'WEB',
         thumbnailUrl: item.thumbnailUrl ?? '',
         provider: watchState?.provider ?? 'WEB',
+        sourceUrl: watchState?.sourceUrl ?? item.sourceUrl,
+        sourceType: watchState?.sourceType,
       ),
     );
     muted = false;
@@ -1029,6 +1191,10 @@ class WatchPartyController extends ChangeNotifier {
   Future<void> selectQueueItem(QueueItem item) async {
     final room = activeRoom;
     if (room == null) return;
+    if (canAddToQueue && watchState?.playing != true) {
+      await playQueueItem(item);
+      return;
+    }
     _setQueue(await api.voteQueueItem(room.id, item.id));
     shelfOpen = true;
     notifyListeners();
@@ -1118,6 +1284,7 @@ class WatchPartyController extends ChangeNotifier {
       id: room.id,
       name: room.name,
       viewerCount: room.viewerCount,
+      ownerName: room.ownerName,
       description: room.description,
       mediaTitle: state.title,
       mediaId: state.mediaId,
@@ -1161,6 +1328,63 @@ class WatchPartyController extends ChangeNotifier {
     _watchReceivedAt = DateTime.now();
   }
 
+  /// Re-resolves a Web page when its temporary signed media URL has expired.
+  /// The stable page URL remains [RoomWatchState.mediaId], so history, queue
+  /// identity, and chat cards do not change when the provider rotates links.
+  List<Map<String, dynamic>> resolvedWebSourcesFor(String pageUrl) =>
+      _resolvedWebSourcesPage == pageUrl ? _resolvedWebSources : const [];
+
+  Future<bool> refreshExpiredWebMedia() async {
+    final state = watchState;
+    final pageUri = Uri.tryParse(state?.mediaId ?? '');
+    final streamUri = Uri.tryParse(state?.sourceUrl ?? '');
+    if (state == null ||
+        !state.provider.toUpperCase().startsWith('DIRECT_') ||
+        pageUri?.scheme != 'https' ||
+        pageUri?.host.isEmpty != false) {
+      return false;
+    }
+    final pagePath = pageUri!.path.toLowerCase();
+    if (state.mediaId == state.sourceUrl &&
+        (pagePath.endsWith('.mp4') || pagePath.endsWith('.m3u8'))) {
+      return false;
+    }
+    try {
+      final resolved = await api.resolveWebMedia(state.mediaId);
+      final resolvedSources =
+          (resolved['sources'] as List<dynamic>? ?? const [])
+              .whereType<Map>()
+              .map((source) => Map<String, dynamic>.from(source))
+              .toList(growable: false);
+      final sourceUrl = (resolved['sourceUrl'] as String? ?? '').trim();
+      final sourceType = (resolved['sourceType'] as String? ?? '').trim();
+      final resolvedUri = Uri.tryParse(sourceUrl);
+      if (resolvedUri?.scheme != 'https' ||
+          resolvedUri?.host.isEmpty != false ||
+          !const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(sourceType)) {
+        return false;
+      }
+      _resolvedWebSourcesPage = state.mediaId;
+      _resolvedWebSources = resolvedSources;
+      final primaryChanged = sourceUrl != streamUri?.toString();
+      if (!primaryChanged && resolvedSources.isEmpty) return false;
+      watchState = state.copyWith(
+        provider: sourceType,
+        sourceType: sourceType,
+        sourceUrl: sourceUrl,
+        thumbnailUrl: (resolved['thumbnailUrl'] as String?)?.trim(),
+      );
+      _watchReceivedAt = DateTime.now();
+      notifyListeners();
+      if (canControlWatch && activeRoom != null) {
+        await api.updateWatch(activeRoom!.id, watchState!);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> seek(double seconds) async {
     if (!canControlWatch) return;
     updatePlayerPosition(seconds);
@@ -1183,6 +1407,29 @@ class WatchPartyController extends ChangeNotifier {
         !watchSync.publish('STOP', watchState!, positionSeconds: 0)) {
       await api.updateWatch(activeRoom!.id, watchState!);
     }
+  }
+
+  Future<void> reportMediaDuration(String mediaId, double duration) async {
+    final room = activeRoom;
+    final state = watchState;
+    if (room == null ||
+        state == null ||
+        !canControlWatch ||
+        state.mediaId != mediaId ||
+        duration <= 0 ||
+        (state.durationSeconds != null &&
+            (state.durationSeconds! - duration).abs() < 1)) {
+      return;
+    }
+    final position = synchronizedPosition.clamp(0.0, duration);
+    watchState = state.copyWith(
+      durationSeconds: duration,
+      positionSeconds: position,
+      playing: state.playing && position < duration - .5,
+    );
+    _watchReceivedAt = DateTime.now();
+    notifyListeners();
+    await api.updateWatch(room.id, watchState!);
   }
 
   void setMuted(bool value) {
@@ -1439,6 +1686,18 @@ class WatchPartyController extends ChangeNotifier {
         thumbnailUrl: thumbnail,
         watchedAt: message.createdAt,
         sensitive: false,
+        sourceUrl: isCurrentTimelineVideo(message)
+            ? watchState?.sourceUrl
+            : history
+                  .where((item) => item.mediaId == mediaId)
+                  .firstOrNull
+                  ?.sourceUrl,
+        sourceType: isCurrentTimelineVideo(message)
+            ? watchState?.sourceType
+            : history
+                  .where((item) => item.mediaId == mediaId)
+                  .firstOrNull
+                  ?.sourceType,
       ),
     );
   }
@@ -1503,7 +1762,8 @@ class WatchPartyController extends ChangeNotifier {
       provider: video.provider,
       title: video.title,
       thumbnailUrl: video.thumbnailUrl,
-      sourceUrl: video.provider == 'YOUTUBE' ? null : video.videoId,
+      sourceUrl: video.provider == 'YOUTUBE' ? null : video.sourceUrl,
+      sourceType: video.sourceType,
     );
     final entry = ViewingActivity.fromJson(data);
     history = [
@@ -1589,6 +1849,7 @@ class WatchPartyController extends ChangeNotifier {
     watchSync.disconnect();
     await voice.disconnect();
     activeRoom = null;
+    activeParticipants = const [];
     watchState = null;
     await _syncDevicePip();
     queue = const [];
@@ -1654,6 +1915,7 @@ class WatchPartyController extends ChangeNotifier {
     watchSync.disconnect();
     notificationStream.disconnect();
     voice.dispose();
+    api.dispose();
     super.dispose();
   }
 }

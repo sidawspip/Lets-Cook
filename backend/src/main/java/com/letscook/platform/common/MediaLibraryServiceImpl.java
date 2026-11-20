@@ -59,7 +59,8 @@ public class MediaLibraryServiceImpl implements MediaLibraryService {
                 input.thumbnailUrl(),
                 input.sourceUrl(),
                 sensitive,
-                Math.max(0, input.watchSeconds() == null ? 0 : input.watchSeconds()));
+                Math.max(0, input.watchSeconds() == null ? 0 : input.watchSeconds()),
+                normalizedSourceType(input.sourceType(), provider));
         return repository.item(userId, mediaId);
     }
 
@@ -87,6 +88,12 @@ public class MediaLibraryServiceImpl implements MediaLibraryService {
         repository.updateSensitiveSetting(userId, input.hideSensitiveContent());
     }
 
+    private String normalizedSourceType(String sourceType, String provider) {
+        String value = sourceType == null ? provider : sourceType.trim().toUpperCase(Locale.ROOT);
+        return List.of("YOUTUBE", "DIRECT_MP4", "DIRECT_HLS", "WEB", "EMBED", "DRM")
+                .contains(value) ? value : null;
+    }
+
     private boolean isSensitive(String value) {
         String text = String.valueOf(value).toLowerCase(Locale.ROOT);
         return List.of(
@@ -103,6 +110,11 @@ public class MediaLibraryServiceImpl implements MediaLibraryService {
             return extracted == null ? mediaId : extracted;
         }
         if (provider.startsWith("DIRECT")) {
+            // A resolved Web video already has a page identity. Its query can
+            // identify the video and is needed to refresh a signed stream.
+            if (sourceUrl != null && !sourceUrl.equals(mediaId) && mediaId.startsWith("https://")) {
+                return mediaId;
+            }
             String extracted = stableDirectId(mediaId);
             if (extracted == null) extracted = stableDirectId(sourceUrl);
             return extracted == null ? mediaId : extracted;

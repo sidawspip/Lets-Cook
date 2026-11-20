@@ -34,6 +34,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly confirmLeaveForHome = signal(false);
   readonly selectedRoom = signal<Room | null>(null);
   readonly loading = signal(false);
+  readonly loggingOut = signal(false);
   readonly error = signal('');
   readonly showCreate = signal(false);
   readonly newAccessKey = signal('');
@@ -103,12 +104,15 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly playerDuration = signal(0);
   readonly playerMuted = signal(false);
   readonly playerVolume = signal(70);
+  private requestedPlayerVolume=70;
   readonly playbackNeedsGesture = signal(false);
   readonly webControlsVisible = signal(true);
   readonly roomChatMessages = signal<RoomChatMessage[]>([]);
   readonly roomLikedMediaIds = signal<Set<string>>(new Set());
   readonly roomSessionActive = signal(false);
   readonly participantMenu = signal<string | null>(null);
+  readonly screenSharePrompt = signal<LiveParticipant | null>(null);
+  private readonly seenScreenShareRequests = new Set<string>();
   readonly avatarPreview = signal('');
   readonly profileError = signal('');
 
@@ -326,6 +330,9 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   focusPeopleSearch():void{this.peopleQuery='';this.peopleResults.set([]);setTimeout(()=>this.peopleSearch?.nativeElement.focus());}
   private receivePushEvent(event:PushEvent):void{
+    if(event.type==='HOST_MUTE' && event.roomId===this.selectedRoom()?.id && this.media.microphoneEnabled())void this.toggleMicrophone();
+    if(event.type==='HOST_UNMUTE_REQUEST' && event.roomId===this.selectedRoom()?.id){this.unmutePrompt.set(true);return;}
+    if(event.type==='SCREEN_SHARE_REQUEST' && event.roomId===this.selectedRoom()?.id)void this.refreshLiveRoom();
     this.pushToast.set(event);setTimeout(()=>{if(this.pushToast()===event)this.pushToast.set(null);},10000);
     if(this.deviceNotificationsEnabled()){
       const alert=new Notification(event.type==='ROOM_INVITE'?`${event.senderName} invited you`:`Message from ${event.senderName}`,{body:event.body,tag:`${event.type}:${event.roomId||event.senderId}`});
@@ -333,6 +340,9 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     if(event.type==='DIRECT_MESSAGE')void this.refreshNotifications();
   }
+  readonly unmutePrompt=signal(false);
+  async acceptUnmuteRequest():Promise<void>{this.unmutePrompt.set(false);if(!this.media.microphoneEnabled())await this.toggleMicrophone();}
+  async hostMicrophoneAction(person:LiveParticipant):Promise<void>{const room=this.selectedRoom();if(!room||room.role!=='HOST')return;try{await this.api.hostMicAction(room.id,person.userId,this.hasMicrophone(person.userId)?'MUTE':'REQUEST_UNMUTE');this.participantMenu.set(null);}catch{this.error.set('Could not change this member’s microphone.');}}
   async openPushEvent(event:PushEvent):Promise<void>{
     this.pushToast.set(null);
     if(event.type==='ROOM_INVITE'&&event.roomId){await this.refreshRooms();const room=this.rooms().find(candidate=>candidate.id===event.roomId);if(room)this.selectRoom(room);return;}
@@ -396,7 +406,7 @@ export class AppComponent implements OnInit, OnDestroy {
   async openRoomSettings(): Promise<void> {
     const room=this.selectedRoom(); if(!room) return;
     this.settingsName=room.name; this.settingsDescription=room.description??''; this.settingsVisibility=room.visibility;
-    this.settingsAccessPolicy=room.accessPolicy; this.settingsSharePolicy=room.screenSharePolicy;
+    this.settingsAccessPolicy=room.accessPolicy; this.settingsSharePolicy='HOSTS_ONLY';
     this.roomMembers.set(await this.api.roomMembers(room.id)); this.showRoomMenu.set(false); this.showRoomSettings.set(true);
   }
 
@@ -468,11 +478,41 @@ export class AppComponent implements OnInit, OnDestroy {
     finally { this.loading.set(false); }
   }
 
+  async signOut(): Promise<void> {
+    if (this.loggingOut()) return;
+    this.loggingOut.set(true);
+    this.profileError.set('');
+    try {
+      // Give Angular and the browser one painted frame before Keycloak changes
+      // location; otherwise a fast logout can skip the visible loading state.
+      await new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+      await this.auth.logout();
+    } catch {
+      this.loggingOut.set(false);
+      this.profileError.set('Could not sign out. Please try again.');
+    }
+  }
+
   async refreshLiveRoom(): Promise<void> {
     const room=this.selectedRoom(); if(!room || !this.roomSessionActive()) return;
     try {
       const [participants,messages,recent]=await Promise.all([this.api.liveParticipants(room.id),this.api.roomChat(room.id),this.api.recentRoomPeople(room.id)]);
       this.liveParticipants.set(participants); this.roomChatMessages.set(messages);this.recentRoomPeople.set(recent);
+      if(room.role==='HOST') {
+        const pending=participants.find(person=>person.screenShareRequested && !this.seenScreenShareRequests.has(`${room.id}:${person.userId}`));
+        if(pending){this.seenScreenShareRequests.add(`${room.id}:${pending.userId}`);this.screenSharePrompt.set(pending);}
+        for(const person of participants.filter(item=>!item.screenShareRequested))this.seenScreenShareRequests.delete(`${room.id}:${person.userId}`);
+      }
+      const me=participants.find(person=>person.userId===this.profile()?.id);
+      if(me?.canShareScreen && this.screenShareWasRequested){this.screenShareWasRequested=false;this.error.set('The host approved screen sharing. Tap Share screen to start.');}
+      if(this.media.sharing() && me && !me.canShareScreen && me.role!=='HOST')void this.stopScreenSharing();
+      const currentRole=participants.find(person=>person.userId===this.profile()?.id)?.role;
+      if(currentRole && currentRole!==room.role){
+        this.selectedRoom.update(selected=>selected?.id===room.id?{...selected,role:currentRole}:selected);
+        this.rooms.update(items=>items.map(item=>item.id===room.id?{...item,role:currentRole}:item));
+      }
       const queue=this.watchQueue();if(queue)this.removeQueuedSuggestions(queue);
     } catch (error: unknown) {
       if (error instanceof HttpErrorResponse && error.status === 403) {
@@ -572,9 +612,17 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async startInstantParty(mode:'sharing'|'youtube'):Promise<void>{
     if(mode==='youtube'){this.youtubeResults.set([]);this.youtubeMessage.set('');this.youtubeQuery='';this.newPartyStep.set('providers');return;}
+    if(!this.media.screenCaptureSupported()){this.error.set('Screen sharing is unavailable in this browser.');return;}
+    // Ask what to share before creating a public room. Cancelling the browser
+    // picker leaves no empty room behind.
+    let tracks: Awaited<ReturnType<MediaService['prepareScreenShare']>>;
+    try{tracks=await this.media.prepareScreenShare();}
+    catch(e){if(e instanceof Error&&e.name!=='NotAllowedError')this.error.set(e.message);return;}
+    if(tracks.some(track=>track.mediaStreamTrack.readyState==='ended')){tracks.forEach(track=>track.stop());return;}
     this.loading.set(true);this.error.set('');
-    try{const display=this.profile()?.displayName||'New';if(this.roomSessionActive())this.exitRoomSession();const result=await this.api.createRoom({name:`${display}'s party ${Date.now().toString().slice(-5)}`,description:'Live screen-sharing party',accessPolicy:'OPEN',approvalRequired:false,maxMembers:50,visibility:'PUBLIC',ephemeral:true});this.rooms.update(items=>[result.room,...items]);this.selectedRoom.set(result.room);this.roomSessionActive.set(false);this.showPublicHome.set(false);await this.enterRoomSession();this.roomExperience.set('sharing');this.watchPicker.set('sharing');}
-    catch{this.error.set('Could not start the live party.');}finally{this.loading.set(false);}
+    let createdRoom:Room|undefined;
+    try{const display=this.profile()?.displayName||'New';if(this.roomSessionActive())this.exitRoomSession();const result=await this.api.createRoom({name:`${display}'s party ${Date.now().toString().slice(-5)}`,description:'Live screen-sharing party',accessPolicy:'OPEN',approvalRequired:false,maxMembers:50,visibility:'PUBLIC',ephemeral:true});createdRoom=result.room;this.rooms.update(items=>[result.room,...items]);this.selectedRoom.set(result.room);this.mainView.set('room');this.roomSessionActive.set(false);this.showPublicHome.set(false);this.newPartyStep.set(null);this.watchPicker.set(null);this.roomExperience.set('sharing');await this.enterRoomSession();if(!this.roomSessionActive())throw new Error('Could not join the new room.');await new Promise(resolve=>setTimeout(resolve,0));if(!this.videoSurface)throw new Error('Screen sharing surface is unavailable.');await this.media.publishPreparedScreenShare(result.room.id,this.videoSurface.nativeElement,tracks);}
+    catch(e){tracks.forEach(track=>track.stop());if(createdRoom){this.media.disconnect();this.roomSessionActive.set(false);this.selectedRoom.set(null);this.showPublicHome.set(true);this.rooms.update(items=>items.filter(item=>item.id!==createdRoom!.id));try{await this.api.deleteRoom(createdRoom.id);}catch{/* The ephemeral room is removed when its session expires. */}}this.error.set(e instanceof Error?e.message:'Could not start the live party.');}finally{this.loading.set(false);}
   }
 
   selectNewPartyProvider(provider:'YOUTUBE'|'DIRECT'|'WEB'|'NETFLIX'|'CRUNCHYROLL'|'TWITCH'):void{
@@ -588,16 +636,16 @@ export class AppComponent implements OnInit, OnDestroy {
     try{const display=this.profile()?.displayName||'New';if(this.roomSessionActive())this.exitRoomSession();const result=await this.api.createRoom({name:`${display}'s party ${Date.now().toString().slice(-5)}`,description:video.title,accessPolicy:'OPEN',approvalRequired:false,maxMembers:50,visibility:'PUBLIC',ephemeral:true});this.rooms.update(items=>[result.room,...items]);this.selectedRoom.set(result.room);this.mainView.set('room');this.roomSessionActive.set(false);this.youtubeState.set(null);this.watchQueue.set(null);this.showPublicHome.set(false);this.newPartyStep.set(null);this.roomExperience.set('youtube');this.showVideoBrowser.set(false);this.watchSideTab.set('chat');await this.enterRoomSession();await this.refreshWatchQueue();const queued=await this.api.addToWatchQueue(result.room.id,{provider:'YOUTUBE',mediaId:video.videoId,title:video.title,thumbnailUrl:video.thumbnailUrl});await this.refreshWatchQueue();await this.startQueueItem(queued);}
     catch{this.error.set('Could not create and start this party.');this.newPartyStep.set('youtube');}finally{this.loading.set(false);}
   }
-  async createPartyFromDirect():Promise<void>{
-    const parsed=this.directMedia(this.youtubeUrl);if(!parsed){this.youtubeMessage.set('Paste a public HTTPS .mp4 or .m3u8 URL.');return;}const direct={...parsed,title:this.resolvedWebTitle||parsed.title};this.resolvedWebTitle='';
+  async createPartyFromDirect(saved?: {mediaId:string;sourceType?:string;thumbnailUrl?:string}):Promise<void>{
+    const parsed=this.directMedia(this.youtubeUrl,saved?.sourceType);if(!parsed){this.youtubeMessage.set('Paste a public HTTPS .mp4 or .m3u8 URL.');return;}const direct={...parsed,title:this.resolvedWebTitle||parsed.title};this.resolvedWebTitle='';
     this.loading.set(true);this.error.set('');
-    try{const display=this.profile()?.displayName||'New';if(this.roomSessionActive())this.exitRoomSession();const result=await this.api.createRoom({name:`${display}'s party ${Date.now().toString().slice(-5)}`,description:direct.title,accessPolicy:'OPEN',approvalRequired:false,maxMembers:50,visibility:'PUBLIC',ephemeral:true});this.rooms.update(items=>[result.room,...items]);this.selectedRoom.set(result.room);this.mainView.set('room');this.roomSessionActive.set(false);this.youtubeState.set(null);this.watchQueue.set(null);this.showPublicHome.set(false);this.newPartyStep.set(null);this.roomExperience.set('youtube');this.showVideoBrowser.set(false);this.watchSideTab.set('chat');await this.enterRoomSession();await this.refreshWatchQueue();const queued=await this.api.addToWatchQueue(result.room.id,{provider:direct.provider,mediaId:direct.url,title:direct.title});await this.refreshWatchQueue();await this.startQueueItem(queued);}
+    try{const display=this.profile()?.displayName||'New';if(this.roomSessionActive())this.exitRoomSession();const result=await this.api.createRoom({name:`${display}'s party ${Date.now().toString().slice(-5)}`,description:direct.title,accessPolicy:'OPEN',approvalRequired:false,maxMembers:50,visibility:'PUBLIC',ephemeral:true});this.rooms.update(items=>[result.room,...items]);this.selectedRoom.set(result.room);this.mainView.set('room');this.roomSessionActive.set(false);this.youtubeState.set(null);this.watchQueue.set(null);this.showPublicHome.set(false);this.newPartyStep.set(null);this.roomExperience.set('youtube');this.showVideoBrowser.set(false);this.watchSideTab.set('chat');await this.enterRoomSession();await this.refreshWatchQueue();const queued=await this.api.addToWatchQueue(result.room.id,{provider:direct.provider,mediaId:saved?.mediaId||direct.url,sourceUrl:direct.url,title:direct.title,thumbnailUrl:saved?.thumbnailUrl});await this.refreshWatchQueue();await this.startQueueItem(queued);}
     catch{this.error.set('Could not create and start this party.');this.newPartyStep.set('direct');}finally{this.loading.set(false);}
   }
   async resolveWebAndCreateParty():Promise<void>{
     const pageUrl=this.youtubeUrl.trim();if(!pageUrl.startsWith('https://')){this.youtubeMessage.set('Paste a public HTTPS webpage URL.');return;}
     this.loading.set(true);this.youtubeMessage.set('Resolving the selected webpage…');
-    try{const media=await this.api.resolveWebMedia(pageUrl);this.youtubeUrl=media.sourceUrl;this.resolvedWebTitle=[media.title,media.siteName].filter(Boolean).join(' · ');this.youtubeMessage.set('');await this.createPartyFromDirect();}
+    try{const media=await this.api.resolveWebMedia(pageUrl);this.youtubeUrl=media.sourceUrl;this.resolvedWebTitle=[media.title,media.siteName].filter(Boolean).join(' · ');this.youtubeMessage.set('');await this.createPartyFromDirect({mediaId:pageUrl,sourceType:media.sourceType,thumbnailUrl:media.thumbnailUrl});}
     catch(e){this.youtubeMessage.set(e instanceof HttpErrorResponse?(e.error?.detail||'This page does not expose a public MP4 or HLS stream.'):'This webpage could not be resolved.');this.loading.set(false);}
   }
 
@@ -609,7 +657,7 @@ export class AppComponent implements OnInit, OnDestroy {
   roomsByVisibility(visibility:'PUBLIC'|'FRIENDS'|'PRIVATE'):Room[]{return this.rooms().filter(room=>room.visibility===visibility);}
 
   async joinMedia(): Promise<void> {
-    await this.enterRoomSession();
+    await this.joinRealtimeMedia();
   }
 
   async joinRealtimeMedia(): Promise<void> {
@@ -622,8 +670,18 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async toggleScreenShare(): Promise<void> {
     const room = this.selectedRoom();
-    if (room && this.videoSurface) { this.watchPicker.set(null); await this.media.toggleScreenShare(room.id, this.videoSurface.nativeElement); }
+    if (!room || !this.videoSurface) return;
+    const me=this.liveParticipants().find(person=>person.userId===this.profile()?.id);
+    if(!this.media.sharing() && room.role!=='HOST' && !me?.canShareScreen){
+      if(!me?.screenShareRequested){try{await this.api.requestScreenShare(room.id);this.screenShareWasRequested=true;await this.refreshLiveRoom();}catch{this.error.set('Could not request screen sharing.');}}
+      this.error.set('Screen sharing request sent to the host.');return;
+    }
+    if (!this.media.sharing() && !window.confirm('Share your screen with everyone in this room until you stop sharing?')) return;
+    this.watchPicker.set(null);
+    await this.media.toggleScreenShare(room.id, this.videoSurface.nativeElement);
   }
+  private screenShareWasRequested=false;
+  async decideScreenShare(allow:boolean):Promise<void>{const room=this.selectedRoom(),person=this.screenSharePrompt();if(!room||!person)return;this.screenSharePrompt.set(null);try{await this.api.setScreenPermission(room.id,person.userId,allow);await this.refreshLiveRoom();}catch{this.error.set('Could not update screen sharing permission.');}}
   async switchToYoutubeInRoom():Promise<void> {
     const room=this.selectedRoom();
     if(!room||!this.canControlWatch())return;
@@ -721,7 +779,8 @@ export class AppComponent implements OnInit, OnDestroy {
   nextYoutubePage():void{const token=this.youtubeNextPageToken();if(token&&!this.youtubeSearching())void this.searchYoutube(this.youtubeQuery,token,1);}
   previousYoutubePage():void{const token=this.youtubePreviousPageToken();if(token&&!this.youtubeSearching())void this.searchYoutube(this.youtubeQuery,token,-1);}
   async playYoutubeInput():Promise<void> {
-    const direct=this.directMedia(this.youtubeUrl);if(direct){if(this.newPartyStep()==='direct'){await this.createPartyFromDirect();return;}const room=this.selectedRoom();if(!room||!this.watchQueue()?.canAdd)return;try{const queued=await this.api.addToWatchQueue(room.id,{provider:direct.provider,mediaId:direct.url,title:direct.title});this.youtubeUrl='';await this.refreshWatchQueue();if(!this.youtubeState()&&this.canControlWatch())await this.startQueueItem(queued);else this.youtubeMessage.set('Direct media added to Up next.');}catch{this.youtubeMessage.set('Could not add that direct media URL.');}return;}
+    if(this.isYoutubeShortUrl(this.youtubeUrl)){this.youtubeMessage.set('YouTube Shorts are not supported. Choose a regular video.');return;}
+    const direct=this.directMedia(this.youtubeUrl);if(direct){if(this.newPartyStep()==='direct'){await this.createPartyFromDirect();return;}const room=this.selectedRoom();if(!room||!this.watchQueue()?.canAdd)return;try{const queued=await this.api.addToWatchQueue(room.id,{provider:direct.provider,mediaId:direct.url,title:direct.title});this.youtubeUrl='';await this.refreshWatchQueue();if(!this.youtubeState()?.playing&&this.watchQueue()?.canAdd)await this.startQueueItem(queued);else this.youtubeMessage.set('Direct media added to Up next.');}catch{this.youtubeMessage.set('Could not add that direct media URL.');}return;}
     const id=this.youtubeId(this.youtubeUrl);if(!id){this.youtubeMessage.set('Paste a valid YouTube, HTTPS MP4, or HLS URL.');return;}
     const video={videoId:id,title:'YouTube video',channelTitle:'',thumbnailUrl:''};if(this.newPartyStep()==='youtube')await this.createPartyFromVideo(video);else await this.queueYoutube(video);
   }
@@ -729,15 +788,13 @@ export class AppComponent implements OnInit, OnDestroy {
     const room=this.selectedRoom();if(!room||!this.watchQueue()?.canAdd)return;const pageUrl=this.youtubeUrl.trim();
     if(!pageUrl.startsWith('https://')){this.youtubeMessage.set('Paste a public HTTPS webpage URL.');return;}
     this.youtubeSearching.set(true);this.youtubeMessage.set('Resolving the selected webpage…');
-    try{const media=await this.api.resolveWebMedia(pageUrl);const title=[media.title,media.siteName].filter(Boolean).join(' · ');const queued=await this.api.addToWatchQueue(room.id,{provider:media.sourceType,mediaId:media.sourceUrl,title:title||'Web video'});this.youtubeUrl='';await this.refreshWatchQueue();if(!this.youtubeState()&&this.canControlWatch())await this.startQueueItem(queued);else this.youtubeMessage.set('Web video added to Up next.');}
+    try{const media=await this.api.resolveWebMedia(pageUrl);const title=[media.title,media.siteName].filter(Boolean).join(' · ');const queued=await this.api.addToWatchQueue(room.id,{provider:media.sourceType,mediaId:pageUrl,sourceUrl:media.sourceUrl,title:title||'Web video'});this.youtubeUrl='';await this.refreshWatchQueue();if(!this.youtubeState()?.playing&&this.watchQueue()?.canAdd)await this.startQueueItem(queued);else this.youtubeMessage.set('Web video added to Up next.');}
     catch(e){this.youtubeMessage.set(e instanceof HttpErrorResponse?(e.error?.detail||'This page does not expose a public MP4 or HLS stream.'):'This webpage could not be resolved.');}
     finally{this.youtubeSearching.set(false);}
   }
-  openWebSearch(engine:'GOOGLE'|'DUCKDUCKGO'):void{
+  openWebSearch():void{
     const query=this.webSearchQuery.trim();
-    const url=engine==='DUCKDUCKGO'
-      ? `https://duckduckgo.com/?q=${encodeURIComponent(query)}`
-      : `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    const url=`https://www.google.com/search?q=${encodeURIComponent(query)}`;
     window.open(url,'_blank','noopener,noreferrer');
     this.youtubeMessage.set('Open a result, copy its webpage URL, then paste it here to play it in the room.');
   }
@@ -749,7 +806,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const room=this.selectedRoom();if(!room||!this.watchQueue()?.canAdd)return;
     if(quickPick&&this.myQueueItems().length){this.youtubeMessage.set('You already have a room pick. Use search to add more videos to your personal queue.');this.showVideoShelf.set(false);return;}
     this.showVideoBrowser.set(false);this.watchSideTab.set('chat');
-    try { const queued=await this.api.addToWatchQueue(room.id,{provider:'YOUTUBE',mediaId:video.videoId,title:video.title,thumbnailUrl:video.thumbnailUrl});this.youtubeSuggestions.update(items=>items.filter(item=>item.videoId!==video.videoId));this.youtubeResults.set([]);this.youtubeUrl='';await this.refreshWatchQueue();if(!this.youtubeState()&&this.canControlWatch()){this.youtubeMessage.set('Starting video…');await this.startQueueItem(queued);}else this.youtubeMessage.set('Added to Up next.'); }
+    try { const queued=await this.api.addToWatchQueue(room.id,{provider:'YOUTUBE',mediaId:video.videoId,title:video.title,thumbnailUrl:video.thumbnailUrl});this.youtubeSuggestions.update(items=>items.filter(item=>item.videoId!==video.videoId));this.youtubeResults.set([]);this.youtubeUrl='';await this.refreshWatchQueue();if(!this.youtubeState()?.playing&&this.watchQueue()?.canAdd){this.youtubeMessage.set('Starting video…');await this.startQueueItem(queued);}else this.youtubeMessage.set('Added to Up next.'); }
     catch(e){this.youtubeMessage.set(e instanceof HttpErrorResponse&&e.status===403?'The host has not allowed you to add videos.':'Could not add this video.');this.showVideoBrowser.set(true);}
   }
   async refreshWatchQueue():Promise<void> {
@@ -764,10 +821,15 @@ export class AppComponent implements OnInit, OnDestroy {
   hasMicrophone(userId:string):boolean{return this.media.microphoneParticipantIds().includes(userId);}
   closeRoom():void{this.participantsDrawerOpen.set(false);this.showHome();}
   isRoomHost(userId:string):boolean{return this.liveParticipants().some(person=>person.userId===userId&&person.role==='HOST');}
-  featuredVoiceParticipant():LiveParticipant|null{const speakers=this.media.activeSpeakerIds();return speakers.map(id=>this.liveParticipants().find(person=>person.userId===id)).find((person):person is LiveParticipant=>!!person)??null;}
+  featuredVoiceParticipant():LiveParticipant|null{const speakers=this.media.activeSpeakerIds();const voices=this.voiceParticipants();return speakers.map(id=>voices.find(person=>person.userId===id)).find((person):person is LiveParticipant=>!!person)??null;}
   voiceParticipants():LiveParticipant[]{
-    const microphones=new Set(this.media.microphoneParticipantIds()),speakers=new Set(this.media.activeSpeakerIds());
-    return this.liveParticipants().filter(person=>microphones.has(person.userId)).sort((a,b)=>Number(speakers.has(b.userId))-Number(speakers.has(a.userId))||(a.role==='HOST'?-1:b.role==='HOST'?1:0));
+    const mine=this.profile(),room=this.selectedRoom(),speakers=new Set(this.media.activeSpeakerIds());
+    const microphoneIds=new Set(this.media.microphoneParticipantIds());
+    if(this.media.microphoneEnabled()&&mine?.id)microphoneIds.add(mine.id);
+    return [...microphoneIds].map(id=>this.liveParticipants().find(person=>person.userId===id)
+      ??(mine?.id===id?{userId:id,username:mine.username,displayName:mine.displayName,avatarUrl:mine.avatarUrl,role:room?.role??'MEMBER',canShareScreen:false}:null)
+      ??{userId:id,username:id,displayName:'Member',role:'MEMBER' as const,canShareScreen:false})
+      .sort((a,b)=>Number(speakers.has(b.userId))-Number(speakers.has(a.userId))||(a.role==='HOST'?-1:b.role==='HOST'?1:0));
   }
   visibleVoiceParticipants():LiveParticipant[]{return this.voiceParticipants().slice(0,6);}
   voiceParticipantOverflow():number{return Math.max(0,this.voiceParticipants().length-6);}
@@ -831,7 +893,7 @@ export class AppComponent implements OnInit, OnDestroy {
   async voteSkip():Promise<void>{const room=this.selectedRoom();if(!room||!this.youtubeState())return;try{const result=await this.api.voteToSkip(room.id);if(result.skipped){this.youtubeMessage.set(result.state?.playing?'Skip passed. Setting up the next video…':'Skip passed. Add a video to continue.');if(result.state)this.youtubeState.set(result.state);await this.refreshWatchQueue();await this.syncYoutube(true);}else{this.youtubeMessage.set(`Skip vote added · ${result.votes}/${result.required}`);await this.refreshWatchQueue();}}catch(e){this.youtubeMessage.set(e instanceof HttpErrorResponse&&e.status===409?'Add a video to the room queue before skipping.':'Could not submit the skip vote.');}}
   async movePersonalQueue(item:WatchQueueItem,direction:-1|1):Promise<void>{const room=this.selectedRoom(),items=this.myQueueItems(),index=items.findIndex(x=>x.id===item.id),target=index+direction;if(!room||index<0||target<0||target>=items.length)return;[items[index],items[target]]=[items[target],items[index]];this.watchQueue.update(queue=>queue?{...queue,items:queue.items.map(x=>{const position=items.findIndex(i=>i.id===x.id);return position<0?x:{...x,personalPosition:position};})}:queue);try{await this.api.reorderWatchQueue(room.id,items.map(x=>x.id));await this.refreshWatchQueue();}catch{this.youtubeMessage.set('Could not reorder your queue.');await this.refreshWatchQueue();}}
   async removeQueue(item:WatchQueueItem):Promise<void>{const room=this.selectedRoom();if(!room)return;await this.api.removeWatchQueue(room.id,item.id);await this.refreshWatchQueue();}
-  async startQueueItem(item?:WatchQueueItem):Promise<void>{if(item?.id==='__playing__'){this.showVideoShelf.set(false);return;}const room=this.selectedRoom();if(!room||!this.canControlWatch())return;try{this.youtubeMessage.set('Starting video…');const state=await this.api.playNext(room.id,item?.id);this.handledEndedMediaKey='';this.youtubeState.set(state);this.showVideoShelf.set(false);await this.refreshWatchQueue();await this.syncYoutube(true);}catch(e){this.youtubeMessage.set(e instanceof HttpErrorResponse&&e.status===409?'That provider is queued as a placeholder and is not integrated yet.':'Could not start the next video.');}}
+  async startQueueItem(item?:WatchQueueItem):Promise<void>{if(item?.id==='__playing__'){this.showVideoShelf.set(false);return;}const room=this.selectedRoom();if(!room||!(this.canControlWatch()||(!this.youtubeState()?.playing&&this.watchQueue()?.canAdd)))return;try{this.youtubeMessage.set('Starting video…');const state=await this.api.playNext(room.id,item?.id);this.handledEndedMediaKey='';this.youtubeState.set(state);this.showVideoShelf.set(false);await this.refreshWatchQueue();await this.syncYoutube(true);}catch(e){this.youtubeMessage.set(e instanceof HttpErrorResponse&&e.status===409?'That provider is queued as a placeholder and is not integrated yet.':'Could not start the next video.');}}
   async changeQueueMode(mode:string):Promise<void>{const room=this.selectedRoom();if(!room)return;await this.api.updateWatchSettings(room.id,mode,10);await this.refreshWatchQueue();}
   async toggleVideoPermission(member:RoomMember):Promise<void>{const room=this.selectedRoom();if(!room)return;await this.api.setVideoPermission(room.id,member.userId,!member.canAddVideos);this.roomMembers.set(await this.api.roomMembers(room.id));await this.refreshWatchQueue();}
   async addPlaceholder(provider:'NETFLIX'|'CRUNCHYROLL'|'TWITCH'):Promise<void>{const room=this.selectedRoom(),title=this.youtubeQuery.trim();if(!room||!title||!this.watchQueue()?.canAdd){this.youtubeMessage.set('Enter a title in the search box first.');return;}await this.api.addToWatchQueue(room.id,{provider,mediaId:title,title});this.youtubeMessage.set(`${provider} title added as an upcoming placeholder.`);await this.refreshWatchQueue();
@@ -844,6 +906,7 @@ export class AppComponent implements OnInit, OnDestroy {
       if(this.canControlWatch()){
         if(state.playing&&this.youtubePlayer.getPlayerState()!==1){this.applyingYoutubeState=true;this.youtubePlayer.seekTo(Math.max(0,state.positionSeconds),true);this.youtubePlayer.playVideo();setTimeout(()=>{this.applyingYoutubeState=false;if(this.youtubePlayer?.getPlayerState()!==1)this.playbackNeedsGesture.set(true);else this.playbackNeedsGesture.set(false);},700);}
         else if(state.playing)this.playbackNeedsGesture.set(false);
+        else{this.applyingYoutubeState=true;this.youtubePlayer.pauseVideo();this.playbackNeedsGesture.set(false);setTimeout(()=>this.applyingYoutubeState=false,350);}
         return;
       }
       const target=Math.max(0,state.positionSeconds),current=this.youtubePlayer.getCurrentTime(),playerState=this.youtubePlayer.getPlayerState();this.applyingYoutubeState=true;
@@ -851,7 +914,7 @@ export class AppComponent implements OnInit, OnDestroy {
       // Avoid re-seeking for ordinary network jitter. Small repeated seeks make
       // the YouTube iframe discard its buffer and look frozen to viewers.
       const drift=Math.abs(current-target),now=Date.now();
-      if((force||drift>3.5)&&(force||now-this.lastYoutubeHardSyncAt>5000)){
+      if(drift>3.5&&(force||now-this.lastYoutubeHardSyncAt>5000)){
         this.youtubePlayer.seekTo(target,true);this.lastYoutubeHardSyncAt=now;
       }
       if(state.playing){
@@ -867,7 +930,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if(!state.sourceUrl)return;
     if(!this.directPlayer){this.youtubePlayer?.destroy();this.youtubePlayer=undefined;surface.replaceChildren();this.directPlayer=document.createElement('video');this.directPlayer.className='direct-media-surface';this.directPlayer.playsInline=true;this.directPlayer.preload='auto';this.directPlayer.onended=()=>void this.onDirectMediaEnded();this.directPlayer.onloadstart=()=>this.youtubeLaunchOverlay.set(true);this.directPlayer.onwaiting=()=>this.youtubeLaunchOverlay.set(true);this.directPlayer.onstalled=()=>this.youtubeLaunchOverlay.set(true);this.directPlayer.onloadeddata=()=>this.youtubeLaunchOverlay.set(false);this.directPlayer.oncanplay=()=>this.youtubeLaunchOverlay.set(false);this.directPlayer.onplaying=()=>this.youtubeLaunchOverlay.set(false);surface.appendChild(this.directPlayer);}
     const player=this.directPlayer;if(force||player.dataset['mediaId']!==state.mediaId){this.youtubeLaunchOverlay.set(true);this.hls?.destroy();this.hls=undefined;if(state.provider==='DIRECT_HLS'&&!player.canPlayType('application/vnd.apple.mpegurl')){const {default:Hls}=await import('hls.js');if(Hls.isSupported()){const hls=new Hls();hls.loadSource(state.sourceUrl);hls.attachMedia(player);this.hls=hls;}else throw new Error('HLS is not supported by this browser.');}else{player.src=state.sourceUrl;player.load();}player.dataset['mediaId']=state.mediaId;}
-    const target=Math.max(0,state.positionSeconds);if(force||Math.abs(player.currentTime-target)>2)player.currentTime=target;
+    const target=Math.max(0,state.positionSeconds);if(!state.playing)player.pause();if(Math.abs(player.currentTime-target)>2)player.currentTime=target;
     player.playbackRate=state.playbackRate||1;player.volume=this.playerVolume()/100;player.muted=this.playerMuted();
     if(state.playing){try{await player.play();this.playbackNeedsGesture.set(false);}catch{this.playbackNeedsGesture.set(true);}}else player.pause();
     this.playerDuration.set(Number.isFinite(player.duration)?player.duration:(state.durationSeconds??0));this.playerPosition.set(player.currentTime||target);if(player.readyState>=3)this.youtubeLaunchOverlay.set(false);
@@ -896,7 +959,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   private async loadYoutubeSuggestions(state:WatchState):Promise<void>{try{const response=await this.api.searchYoutube(state.title||state.mediaId);const unavailable=this.playedRoomMediaIds();for(const item of this.watchQueue()?.items??[])unavailable.add(item.mediaId);unavailable.add(state.mediaId);const playedTitles=this.playedRoomMediaTitles();this.youtubeSuggestions.set(response.results.filter(video=>!unavailable.has(video.videoId)&&!playedTitles.has(this.normalizedRoomMediaTitle(video.title))).slice(0,8).map(video=>({...video,thumbnailUrl:this.youtubePreview(video.videoId)})));}catch{this.youtubeSuggestions.set([]);}}
   private async onYoutubePlayerState(playerState:number):Promise<void> {
-    if(playerState===1)this.youtubeLaunchOverlay.set(false);
+    if(playerState===1){this.youtubeLaunchOverlay.set(false);this.playbackNeedsGesture.set(false);}
     if(this.optimisticPlaybackState!==null&&playerState===(this.optimisticPlaybackState?1:2)){
       this.clearOptimisticPlaybackState();
       return;
@@ -929,10 +992,11 @@ export class AppComponent implements OnInit, OnDestroy {
   async seekRoom(delta:number):Promise<void>{const player=this.youtubePlayer,direct=this.directPlayer,state=this.youtubeState();if((!player&&!direct)||!state||!this.canControlWatch())return;const position=Math.max(0,(direct?.currentTime??player!.getCurrentTime())+delta);if(direct)direct.currentTime=position;else player!.seekTo(position,true);if(!this.watchSync.publish('SEEK',state,{positionSeconds:position}))await this.publishYoutubePosition(direct?!direct.paused:player!.getPlayerState()===1);}
   async seekRoomTo(value:number|string):Promise<void>{const player=this.youtubePlayer,direct=this.directPlayer,state=this.youtubeState();if((!player&&!direct)||!state||!this.canControlWatch())return;const position=Math.max(0,Number(value));if(direct)direct.currentTime=position;else player!.seekTo(position,true);this.playerPosition.set(position);if(!this.watchSync.publish('SEEK',state,{positionSeconds:position}))await this.publishYoutubePosition(direct?!direct.paused:player!.getPlayerState()===1);}
   toggleLocalMute():void{const direct=this.directPlayer;if(direct){direct.muted=!direct.muted;this.playerMuted.set(direct.muted);return;}const player=this.youtubePlayer;if(!player)return;if(player.isMuted()){player.unMute();this.playerMuted.set(false);}else{player.mute();this.playerMuted.set(true);}}
-  changeLocalVolume(value:number|string):void{const volume=Math.max(0,Math.min(100,Number(value)));if(this.directPlayer){this.directPlayer.volume=volume/100;this.directPlayer.muted=volume===0;this.playerVolume.set(volume);this.playerMuted.set(volume===0);return;}const player=this.youtubePlayer;if(!player)return;player.setVolume(volume);if(volume>0&&player.isMuted())player.unMute();this.playerVolume.set(volume);this.playerMuted.set(volume===0);}
+  changeLocalVolume(value:number|string):void{const volume=Math.max(0,Math.min(100,Number(value)));this.requestedPlayerVolume=volume;this.playerVolume.set(volume);this.playerMuted.set(volume===0);if(volume>0)this.youtubePlayer?.unMute();this.applyVoiceDucking();}
+  private applyVoiceDucking():void{const me=this.profile()?.id;const speaking=this.media.activeSpeakerIds().some(id=>id!==me);const volume=Math.round(this.requestedPlayerVolume*(speaking?.65:1));if(this.directPlayer){this.directPlayer.volume=volume/100;this.directPlayer.muted=this.playerMuted()||this.requestedPlayerVolume===0;}else if(this.youtubePlayer){this.youtubePlayer.setVolume(volume);}this.media.setSharedAudioDucking(speaking);}
   async toggleYoutubeFullscreen():Promise<void>{const surface=this.youtubeSurface?.nativeElement.closest('.youtube-watch');if(!surface)return;if(document.fullscreenElement)await document.exitFullscreen();else await surface.requestFullscreen();}
-  formatPlayerTime(seconds:number):string{const safe=Math.max(0,Math.floor(seconds||0)),minutes=Math.floor(safe/60),remaining=safe%60;return `${minutes}:${remaining.toString().padStart(2,'0')}`;}
-  private refreshPlayerTelemetry():void{if(this.directPlayer){this.playerPosition.set(this.directPlayer.currentTime||0);this.playerDuration.set(Number.isFinite(this.directPlayer.duration)?this.directPlayer.duration:0);this.playerMuted.set(this.directPlayer.muted);this.playerVolume.set(Math.round(this.directPlayer.volume*100));return;}const player=this.youtubePlayer;if(!player)return;try{this.playerPosition.set(player.getCurrentTime()||0);this.playerDuration.set(player.getDuration()||0);this.playerMuted.set(player.isMuted());this.playerVolume.set(player.getVolume());}catch{/* player may be switching videos */}}
+  formatPlayerTime(seconds:number):string{const safe=Math.max(0,Math.floor(seconds||0)),hours=Math.floor(safe/3600),minutes=Math.floor(safe/60)%60,remaining=safe%60;return hours>0?`${hours}:${minutes.toString().padStart(2,'0')}:${remaining.toString().padStart(2,'0')}`:`${minutes}:${remaining.toString().padStart(2,'0')}`;}
+  private refreshPlayerTelemetry():void{this.applyVoiceDucking();if(this.directPlayer){this.playerPosition.set(this.directPlayer.currentTime||0);this.playerDuration.set(Number.isFinite(this.directPlayer.duration)?this.directPlayer.duration:0);this.playerMuted.set(this.directPlayer.muted);return;}const player=this.youtubePlayer;if(!player)return;try{this.playerPosition.set(player.getCurrentTime()||0);this.playerDuration.set(player.getDuration()||0);this.playerMuted.set(player.isMuted());}catch{/* player may be switching videos */}}
   private async heartbeatRoomWatch():Promise<void>{const room=this.selectedRoom();if(!room||!this.youtubeState())return;try{this.youtubeState.set(await this.api.heartbeatWatch(room.id));}catch{/* next heartbeat retries */}}
   private async enterRoomSession():Promise<void>{const room=this.selectedRoom();if(!room)return;if(this.roomSessionActive()){this.rememberActiveRoom();return;}try{await this.api.liveJoin(room.id);this.roomSessionActive.set(true);this.rememberActiveRoom();await this.refreshLiveRoom();void this.refreshRoomVideoLikes();}catch{this.roomSessionActive.set(false);}}
   private async ensureRoomPresence():Promise<void>{await this.enterRoomSession();}
@@ -949,8 +1013,9 @@ export class AppComponent implements OnInit, OnDestroy {
       if(command!==undefined&&command===this.playbackCommandSequence){this.youtubeState.update(current=>current?{...current,playing:!playing}:current);this.clearOptimisticPlaybackState(command);}
     }
   }
-  private youtubeId(value:string):string|null { const v=value.trim();if(/^[\w-]{11}$/.test(v))return v;try{const u=new URL(v);if(u.hostname==='youtu.be')return u.pathname.slice(1).split('/')[0]||null;if(u.hostname.includes('youtube.com'))return u.searchParams.get('v')??u.pathname.match(/\/(?:embed|shorts)\/([\w-]{11})/)?.[1]??null;}catch{}return null; }
-  private directMedia(value:string):{provider:'DIRECT_MP4'|'DIRECT_HLS';url:string;title:string}|null{try{const url=new URL(value.trim());if(url.protocol!=='https:')return null;const path=url.pathname.toLowerCase();if(path.endsWith('.m3u8'))return{provider:'DIRECT_HLS',url:url.toString(),title:path.split('/').pop()||'HLS stream'};if(path.endsWith('.mp4'))return{provider:'DIRECT_MP4',url:url.toString(),title:path.split('/').pop()||'Video'};}catch{}return null;}
+  private isYoutubeShortUrl(value:string):boolean { try { const url=new URL(value.trim());return (url.hostname==='youtube.com'||url.hostname.endsWith('.youtube.com'))&&url.pathname.startsWith('/shorts/'); }catch{return false;} }
+  private youtubeId(value:string):string|null { const v=value.trim();if(/^[\w-]{11}$/.test(v))return v;try{const u=new URL(v);if(u.hostname==='youtu.be')return u.pathname.slice(1).split('/')[0]||null;if(u.hostname.includes('youtube.com'))return u.searchParams.get('v')??u.pathname.match(/\/embed\/([\w-]{11})/)?.[1]??null;}catch{}return null; }
+  private directMedia(value:string,sourceType?:string):{provider:'DIRECT_MP4'|'DIRECT_HLS';url:string;title:string}|null{try{const url=new URL(value.trim());if(url.protocol!=='https:')return null;const path=url.pathname.toLowerCase();if(sourceType==='DIRECT_HLS'||path.endsWith('.m3u8'))return{provider:'DIRECT_HLS',url:url.toString(),title:path.split('/').pop()||'HLS stream'};if(sourceType==='DIRECT_MP4'||path.endsWith('.mp4'))return{provider:'DIRECT_MP4',url:url.toString(),title:path.split('/').pop()||'Video'};}catch{}return null;}
   leaveMedia(): void { this.media.disconnect(); }
   private rememberActiveRoom():void{const room=this.selectedRoom();if(!room||!this.roomSessionActive())return;try{sessionStorage.setItem(this.activeRoomStorageKey,JSON.stringify({roomId:room.id,experience:this.roomExperience()}));}catch{/* storage may be unavailable in privacy-restricted browsers */}}
   private forgetActiveRoom():void{try{sessionStorage.removeItem(this.activeRoomStorageKey);}catch{/* storage may be unavailable */}}
@@ -964,6 +1029,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if(saved.experience==='youtube'){
       try{const state=await this.api.watchState(room.id);if(state){this.youtubeState.set(state);this.showVideoBrowser.set(false);await this.connectWatchEvents();await this.refreshWatchQueue();await this.syncYoutube(true);}else{this.roomExperience.set('sharing');this.rememberActiveRoom();}}catch{/* normal refresh loops will retry */}
     }else await this.discoverActiveWatch();
+    // The room view is created after this async restore finishes.
+    setTimeout(() => { if(this.roomSessionActive()&&this.selectedRoom()?.id===room.id) void this.joinRealtimeMedia(); });
   }
   async openMediaLibrary(view:'history'|'likes'):Promise<void>{
     this.mediaLibraryView.set(view);this.mediaLibraryLoading.set(true);
@@ -979,18 +1046,31 @@ export class AppComponent implements OnInit, OnDestroy {
   async removeLibraryHistory(item:MediaLibraryItem):Promise<void>{await this.api.removeMediaHistory(item.mediaId);const library=this.mediaLibrary();if(library)this.mediaLibrary.set({...library,history:library.history.filter(entry=>entry.mediaId!==item.mediaId)});}
   async playLibraryItem(item:MediaLibraryItem):Promise<void>{
     this.mediaLibraryView.set(null);
-    const provider=item.provider==='YOUTUBE'?'YOUTUBE':item.provider==='DIRECT_MP4'?'DIRECT_MP4':item.provider==='DIRECT_HLS'?'DIRECT_HLS':null;
+    let sourceUrl = item.sourceUrl || item.mediaId;
+    let sourceType = item.sourceType || item.provider;
+    if (sourceType !== 'YOUTUBE' && (!this.directMedia(sourceUrl,sourceType) || sourceUrl===item.mediaId && !this.directMedia(sourceUrl))) {
+      try {
+        const resolved = await this.api.resolveWebMedia(item.mediaId);
+        sourceUrl = resolved.sourceUrl;
+        sourceType = resolved.sourceType;
+      } catch {
+        this.error.set('This saved video could not be refreshed. Please try again.');
+        return;
+      }
+    }
+    const provider=sourceType==='YOUTUBE'?'YOUTUBE':sourceType==='DIRECT_MP4'?'DIRECT_MP4':sourceType==='DIRECT_HLS'?'DIRECT_HLS':null;
     const room=this.selectedRoom();
     if(room&&this.roomSessionActive()&&this.watchQueue()?.canAdd&&provider){
-      try{const queued=await this.api.addToWatchQueue(room.id,{provider,mediaId:item.mediaId,title:item.title,thumbnailUrl:item.thumbnailUrl});await this.refreshWatchQueue();this.roomExperience.set('youtube');if(!this.youtubeState()&&this.canControlWatch())await this.startQueueItem(queued);else this.youtubeMessage.set('Saved video added to Up next.');return;}catch{this.error.set('Could not add that saved video to this room.');return;}
+      try{const queued=await this.api.addToWatchQueue(room.id,{provider,mediaId:item.mediaId,sourceUrl,title:item.title,thumbnailUrl:item.thumbnailUrl});await this.refreshWatchQueue();this.roomExperience.set('youtube');if(!this.youtubeState()?.playing&&this.watchQueue()?.canAdd)await this.startQueueItem(queued);else this.youtubeMessage.set('Saved video added to Up next.');return;}catch{this.error.set('Could not add that saved video to this room.');return;}
     }
+    if(room&&this.roomSessionActive()){this.error.set('Video additions are restricted by this room’s settings.');return;}
     if(item.provider==='YOUTUBE'){await this.createPartyFromVideo({videoId:item.mediaId,title:item.title,channelTitle:'History',thumbnailUrl:item.thumbnailUrl??''});return;}
-    const url=item.sourceUrl||item.mediaId;if(!this.directMedia(url)){this.error.set('This saved provider cannot be played directly yet.');return;}
-    this.youtubeUrl=url;this.resolvedWebTitle=item.title;await this.createPartyFromDirect();
+    const url=sourceUrl;if(!this.directMedia(url,sourceType)){this.error.set('This saved provider cannot be played directly yet.');return;}
+    this.youtubeUrl=url;this.resolvedWebTitle=item.title;await this.createPartyFromDirect({...item,sourceType});
   }
   private async rememberMedia(state:WatchState):Promise<void>{
     if(this.recordedMediaIds.has(state.mediaId))return;this.recordedMediaIds.add(state.mediaId);
-    try{await this.api.recordMedia({mediaId:state.mediaId,provider:state.provider,title:state.title||'Untitled video',thumbnailUrl:state.thumbnailUrl,sourceUrl:state.sourceUrl});}
+    try{await this.api.recordMedia({mediaId:state.mediaId,provider:state.provider,title:state.title||'Untitled video',thumbnailUrl:state.thumbnailUrl,sourceUrl:state.sourceUrl,sourceType:state.sourceType});}
     catch{this.recordedMediaIds.delete(state.mediaId);}
   }
   private exitRoomSession():void{const room=this.selectedRoom();this.watchSync.disconnect();this.media.disconnect();if(room&&this.roomSessionActive())void this.api.liveLeave(room.id);this.forgetActiveRoom();this.roomSessionActive.set(false);this.liveParticipants.set([]);this.roomChatMessages.set([]);}

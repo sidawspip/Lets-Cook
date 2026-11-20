@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 
 class DeviceFeatures {
   DeviceFeatures._();
-  static const _channel = MethodChannel('letscook.world/device');
+  static const _channel = MethodChannel('xynk.in/device');
   static Future<void> Function(Map<String, dynamic>)? _notificationTapListener;
   static Future<void> Function(bool)? _pipModeListener;
   static bool _handlerInstalled = false;

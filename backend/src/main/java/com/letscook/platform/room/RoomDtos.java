@@ -26,6 +26,7 @@ public final class RoomDtos {
     public record RoomSummary(
             UUID id,
             String name,
+            String ownerName,
             String description,
             AccessPolicy accessPolicy,
             RoomRole role,
@@ -80,9 +81,9 @@ public final class RoomDtos {
                              boolean videoAccessRequested, boolean online) {
     }
 
-    public record PublicRoom(UUID id,String name,String description,AccessPolicy accessPolicy,int viewerCount,
+    public record PublicRoom(UUID id,String name,String ownerName,String description,AccessPolicy accessPolicy,int viewerCount,
                              String mediaTitle,String mediaId,String mediaProvider,String thumbnailUrl,
                              double positionSeconds,Double durationSeconds,
-                             java.util.List<String> viewerAvatars,boolean joined) {}
+                             java.util.List<String> viewerAvatars,boolean joined,RoomRole role) {}
 }
 

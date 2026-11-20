@@ -6,17 +6,23 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:livekit_client/livekit_client.dart'
+    show VideoTrackRenderer, VideoViewFit;
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../models/models.dart';
 import '../services/media_resolver.dart';
+import '../services/crunchyroll_room_player.dart';
+import '../services/room_voice_service.dart' show VoiceMember;
 import '../state/watch_party_controller.dart';
 import 'media_discovery_screen.dart';
 import '../theme/app_theme.dart';
 import '../services/device_features.dart';
 import '../widgets/media_preview.dart';
+import '../widgets/screen_share_confirmation.dart';
+import '../widgets/wave_loader.dart';
 import 'home_screen.dart';
 import 'user_profile_screen.dart';
 
@@ -109,10 +115,12 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   final MediaResolver _resolver = SplitMediaResolver();
   VideoPlayerController? _player;
   WebViewController? _providerBrowser;
+  bool _nativeCrunchyroll = false;
   String? _providerBrowserMediaKey;
   Timer? _telemetry;
   Timer? _controlsTimer;
   String? _loadedMediaKey;
+  String? _durationReportedMediaKey;
   double _position = 0;
   double _duration = 0;
   bool _sampling = false;
@@ -132,16 +140,125 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   String _captionText = '';
   String? _endedMediaKey;
   DateTime _lastProgressAt = DateTime.now();
+  DateTime _lastHardSyncAt = DateTime.fromMillisecondsSinceEpoch(0);
   double _lastObservedPosition = -1;
   bool _stallReported = false;
+  int _stallRecoveryAttempts = 0;
+  bool _recoveringStall = false;
   final _playerRevision = ValueNotifier<int>(0);
   final _videoSurfaceKey = GlobalKey(debugLabel: 'room-video-surface');
   Offset? _videoGestureStart;
   Offset _videoGestureDelta = Offset.zero;
   bool _viewerLoginConfirmed = false;
+  final Set<String> _seenShareRequests = {};
+  bool _shareDialogOpen = false;
+
+  void _checkShareRequests() {
+    unawaited(_restoreLocalAudio());
+    if (widget.controller.screenShareApproved && mounted) {
+      widget.controller.screenShareApproved = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Host approved screen sharing. Tap Share screen to start.',
+              ),
+            ),
+          );
+      });
+    }
+    if (widget.controller.unmuteRequested && mounted) {
+      widget.controller.unmuteRequested = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        final accept = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('The host asked you to unmute'),
+            content: const Text(
+              'Your microphone will turn on only if you accept.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Keep muted'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Turn on microphone'),
+              ),
+            ],
+          ),
+        );
+        if (accept == true &&
+            widget.controller.activeRoom != null &&
+            !widget.controller.voice.microphoneEnabled)
+          await widget.controller.voice.toggleMicrophone(
+            widget.controller.activeRoom!.id,
+          );
+      });
+    }
+    final room = widget.controller.activeRoom;
+    final me = widget.controller.activeParticipants
+        .where(
+          (person) =>
+              person['userId']?.toString() == widget.controller.profile?.id,
+        )
+        .firstOrNull;
+    if (room?.role != 'HOST' &&
+        widget.controller.voice.screenShareEnabled &&
+        me?['canShareScreen'] != true &&
+        room != null)
+      unawaited(widget.controller.voice.toggleScreenShare(room.id));
+    if (!mounted || room?.role != 'HOST' || _shareDialogOpen) return;
+    final pending = widget.controller.activeParticipants
+        .where(
+          (person) =>
+              person['screenShareRequested'] == true &&
+              !_seenShareRequests.contains(person['userId']?.toString()),
+        )
+        .firstOrNull;
+    if (pending == null) return;
+    final userId = pending['userId']?.toString();
+    if (userId == null) return;
+    _seenShareRequests.add(userId);
+    _shareDialogOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final allow = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Screen share request'),
+          content: Text(
+            '${pending['displayName'] ?? 'A member'} wants to share a screen.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Decline'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Allow'),
+            ),
+          ],
+        ),
+      );
+      _shareDialogOpen = false;
+      if (allow != null)
+        await widget.controller.api.setScreenPermission(
+          room!.id,
+          userId,
+          allow,
+        );
+    });
+  }
 
   bool _canFallbackToProviderBrowser(RoomWatchState state) =>
-      _providerPageFallbackProviders.contains(state.provider.toUpperCase());
+      _providerPageFallbackProviders.contains(state.provider.toUpperCase()) &&
+      !(CrunchyrollRoomPlayer.supported &&
+          state.provider.toUpperCase() == 'CRUNCHYROLL');
 
   bool _usesProviderBrowser(RoomWatchState? state) =>
       state != null &&
@@ -151,7 +268,50 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   bool get _videoAccessReady =>
       widget.controller.canControlWatch ||
-      (widget.controller.canViewVideo && _viewerLoginConfirmed);
+      (widget.controller.canViewVideo &&
+          (!const {'NETFLIX', 'PRIME_VIDEO', 'CRUNCHYROLL'}.contains(
+                widget.controller.watchState?.provider.toUpperCase(),
+              ) ||
+              _viewerLoginConfirmed));
+
+  Future<({ResolvedMedia media, VideoPlayerController player})>
+  _initializeResolvedMedia(RoomWatchState state) async {
+    var media = await _resolver.resolve(
+      state,
+      quality: widget.controller.selectedQuality,
+    );
+    final sourcePage = Uri.tryParse(state.mediaId);
+    final refreshedSources = resolvedMediaSourcesFromResponse(
+      widget.controller.resolvedWebSourcesFor(state.mediaId),
+      sourcePage: sourcePage,
+    );
+    if (refreshedSources.isNotEmpty) {
+      media = media.withFallbackSources(refreshedSources);
+    }
+    Object? lastError;
+    for (final source in media.orderedSources) {
+      final player = VideoPlayerController.networkUrl(
+        source.uri,
+        httpHeaders: source.httpHeaders,
+        viewType: defaultTargetPlatform == TargetPlatform.android
+            ? VideoViewType.platformView
+            : VideoViewType.textureView,
+        videoPlayerOptions: VideoPlayerOptions(
+          allowBackgroundPlayback: true,
+          mixWithOthers: !widget.controller.muteOtherAudio,
+        ),
+      );
+      try {
+        await player.initialize();
+        return (media: media, player: player);
+      } catch (error) {
+        lastError = error;
+        await player.dispose();
+      }
+    }
+    if (lastError != null) throw lastError;
+    throw StateError('The provider did not return a playable video source.');
+  }
 
   @override
   void initState() {
@@ -159,6 +319,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     WidgetsBinding.instance.addObserver(this);
     DeviceFeatures.onPipModeChanged(_handlePipModeChanged);
     _syncAutoPip();
+    widget.controller.addListener(_checkShareRequests);
     _ensureVideo();
     _telemetry = Timer.periodic(
       const Duration(seconds: 1),
@@ -174,13 +335,17 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   Future<void> _ensureVideo() async {
     if (!_videoAccessReady) return;
-    final state = widget.controller.watchState;
+    var state = widget.controller.watchState;
     final key = state == null
         ? null
         : '${state.provider}:${state.mediaId}:${state.sourceUrl ?? ''}';
     if (state == null || key == _loadedMediaKey || _loading) return;
     _providerBrowser = null;
     _providerBrowserMediaKey = null;
+    if (_nativeCrunchyroll) {
+      _nativeCrunchyroll = false;
+      unawaited(CrunchyrollRoomPlayer.close());
+    }
     _loadedMediaKey = key;
     _showCurrentInQueue = true;
     _resolvedTitle = null;
@@ -192,10 +357,57 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     });
     VideoPlayerController? candidate;
     try {
-      final media = await _resolver.resolve(
-        state,
-        quality: widget.controller.selectedQuality,
-      );
+      if (state.provider.toUpperCase() == 'CRUNCHYROLL' &&
+          CrunchyrollRoomPlayer.supported) {
+        await _openCrunchyroll(state);
+        return;
+      }
+      final pageUri = Uri.tryParse(state.mediaId);
+      final streamUri = Uri.tryParse(state.sourceUrl ?? '');
+      final pagePath = pageUri?.path.toLowerCase() ?? '';
+      final pageIsDirectMedia =
+          pagePath.endsWith('.mp4') || pagePath.endsWith('.m3u8');
+      final isDirectWeb =
+          state.provider.toUpperCase().startsWith('DIRECT_') &&
+          pageUri?.scheme == 'https' &&
+          pageUri?.host.isNotEmpty == true;
+      final streamIsOnlyPageIdentity =
+          streamUri?.scheme != 'https' || state.sourceUrl == state.mediaId;
+      final needsInitialWebResolve =
+          isDirectWeb && streamIsOnlyPageIdentity && !pageIsDirectMedia;
+      final hasRefreshableStream =
+          isDirectWeb &&
+          streamUri?.scheme == 'https' &&
+          state.mediaId != state.sourceUrl;
+      if (needsInitialWebResolve) {
+        final refreshed = await widget.controller.refreshExpiredWebMedia();
+        if (!refreshed) {
+          throw StateError(
+            'This Web page did not resolve to a playable video. Open the video page in Web and try again.',
+          );
+        }
+        state = widget.controller.watchState ?? state;
+        _loadedMediaKey =
+            '${state.provider}:${state.mediaId}:${state.sourceUrl ?? ''}';
+      }
+      late ({ResolvedMedia media, VideoPlayerController player}) opened;
+      try {
+        opened = await _initializeResolvedMedia(state);
+      } catch (_) {
+        // Try the normalized source list before asking the stable page for a
+        // fresh signed URL. This avoids consuming the stream with a separate
+        // probe before the real player receives its first connection.
+        if (!hasRefreshableStream ||
+            !await widget.controller.refreshExpiredWebMedia()) {
+          rethrow;
+        }
+        state = widget.controller.watchState ?? state;
+        _loadedMediaKey =
+            '${state.provider}:${state.mediaId}:${state.sourceUrl ?? ''}';
+        opened = await _initializeResolvedMedia(state);
+      }
+      final media = opened.media;
+      candidate = opened.player;
       _qualities = media.qualities;
       _resolvedTitle = media.title;
       widget.controller.rememberResolvedMediaTitle(state.mediaId, media.title);
@@ -212,30 +424,12 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
       final previous = _player;
       _player = null;
       await previous?.dispose();
-      candidate = VideoPlayerController.networkUrl(
-        media.uri,
-        httpHeaders: media.httpHeaders,
-        // A native Android video surface keeps decoder frames attached when
-        // the Activity enters system Picture-in-Picture. Texture-backed video
-        // can be replaced by Flutter's task placeholder while the root surface
-        // is being resized into the PiP window.
-        viewType: defaultTargetPlatform == TargetPlatform.android
-            ? VideoViewType.platformView
-            : VideoViewType.textureView,
-        videoPlayerOptions: VideoPlayerOptions(
-          allowBackgroundPlayback: true,
-          mixWithOthers: !widget.controller.muteOtherAudio,
-        ),
-      );
-      await candidate.initialize();
       final mediaDurationSeconds =
           candidate.value.duration.inMilliseconds /
           Duration.millisecondsPerSecond;
       final requestedPosition = state.positionSeconds;
       final startPosition = mediaDurationSeconds > 0
-          ? (state.playing && requestedPosition >= mediaDurationSeconds - .5
-                ? 0.0
-                : requestedPosition.clamp(0.0, mediaDurationSeconds))
+          ? requestedPosition.clamp(0.0, mediaDurationSeconds)
           : requestedPosition.clamp(0.0, double.infinity);
       await candidate.seekTo(
         Duration(milliseconds: (startPosition * 1000).round()),
@@ -255,13 +449,21 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
       _lastProgressAt = DateTime.now();
       _stallReported = false;
       await _restoreLocalAudio();
-      if (state.playing) await _player!.play();
-      if (!state.playing) _playbackReady = true;
+      if (state.playing &&
+          (mediaDurationSeconds <= 0 ||
+              startPosition < mediaDurationSeconds - .5)) {
+        await _player!.play().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => debugPrint('Player start is still buffering'),
+        );
+      } else {
+        _playbackReady = true;
+      }
       _syncAutoPip();
       await _syncWakeLock();
     } catch (error) {
       await candidate?.dispose();
-      if (_canFallbackToProviderBrowser(state)) {
+      if (_canFallbackToProviderBrowser(state!)) {
         await _ensureProviderBrowser(state, key!);
         return;
       }
@@ -272,6 +474,24 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _openCrunchyroll(RoomWatchState state) async {
+    final id = CrunchyrollRoomPlayer.videoId(state.mediaId);
+    if (id == null) throw StateError('Select a Crunchyroll episode first.');
+    final old = _player;
+    _player = null;
+    await old?.dispose();
+    _nativeCrunchyroll = true;
+    if (mounted) setState(() {});
+    await WidgetsBinding.instance.endOfFrame;
+    await CrunchyrollRoomPlayer.open(id);
+    await CrunchyrollRoomPlayer.seek(state.positionSeconds);
+    await CrunchyrollRoomPlayer.speed(state.playbackRate);
+    await _restoreLocalAudio();
+    if (state.playing) await CrunchyrollRoomPlayer.play();
+    _resolvedTitle = _mediaTitle(state);
+    _playbackReady = true;
   }
 
   Future<void> _ensureProviderBrowser(RoomWatchState state, String key) async {
@@ -369,7 +589,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     if (snapshot['found'] != true) {
       setState(() {
         _playerError =
-            'Open and start the video on this provider page. Lets Cook will synchronize it when the player appears.';
+            'Open and start the video on this provider page. Xynk will synchronize it when the player appears.';
       });
       return;
     }
@@ -381,15 +601,85 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   }
 
   Future<void> _restoreLocalAudio() async {
+    if (_nativeCrunchyroll) {
+      final speaking = widget.controller.voice.members.any(
+        (member) =>
+            member.speaking &&
+            member.identity != widget.controller.voice.localIdentity,
+      );
+      await CrunchyrollRoomPlayer.volume(
+        widget.controller.muted
+            ? 0
+            : widget.controller.volume * (speaking ? .65 : 1),
+      );
+      return;
+    }
     final player = _player;
     if (player == null) return;
+    final speaking = widget.controller.voice.members.any(
+      (member) =>
+          member.speaking &&
+          member.identity != widget.controller.voice.localIdentity,
+    );
     await player.setVolume(
-      widget.controller.muted ? 0 : widget.controller.volume,
+      widget.controller.muted
+          ? 0
+          : widget.controller.volume * (speaking ? .65 : 1),
     );
   }
 
   Future<void> _samplePlayer() async {
     final desired = widget.controller.watchState;
+    if (_nativeCrunchyroll && desired != null) {
+      if (_sampling) return;
+      _sampling = true;
+      try {
+        final snap = await CrunchyrollRoomPlayer.snapshot();
+        if (!mounted) return;
+        setState(() {
+          _position = snap.position;
+          _duration = snap.duration > 0 ? snap.duration : 0;
+          _playbackReady = snap.ready;
+          _playerError = snap.error;
+        });
+        if (snap.error != null) return;
+        if (snap.ready &&
+            snap.duration > 0 &&
+            widget.controller.canControlWatch &&
+            desired.durationSeconds == null &&
+            _durationReportedMediaKey != _loadedMediaKey) {
+          _durationReportedMediaKey = _loadedMediaKey;
+          unawaited(
+            widget.controller.reportMediaDuration(
+              desired.mediaId,
+              snap.duration,
+            ),
+          );
+        }
+        if (snap.ready) {
+          final target = widget.controller.synchronizedPosition;
+          if ((snap.position - target).abs() > 5) {
+            await CrunchyrollRoomPlayer.seek(target);
+          }
+          if (desired.playing && !snap.playing)
+            await CrunchyrollRoomPlayer.play();
+          if (!desired.playing && snap.playing)
+            await CrunchyrollRoomPlayer.pause();
+          if (snap.ended &&
+              _endedMediaKey != _loadedMediaKey &&
+              widget.controller.canControlWatch) {
+            _endedMediaKey = _loadedMediaKey;
+            final advanced = await widget.controller.playHighestVoted();
+            if (!advanced) await widget.controller.stopPlayback();
+          }
+        }
+      } catch (error) {
+        if (mounted) setState(() => _playerError = error.toString());
+      } finally {
+        _sampling = false;
+      }
+      return;
+    }
     if (_usesProviderBrowser(desired)) {
       if (desired != null && !_sampling) {
         _sampling = true;
@@ -418,11 +708,27 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
       }
       final current = player.value.position.inMilliseconds / 1000;
       final duration = player.value.duration.inMilliseconds / 1000;
+      if (duration > 0 &&
+          widget.controller.canControlWatch &&
+          desired.durationSeconds == null &&
+          _durationReportedMediaKey != _loadedMediaKey) {
+        _durationReportedMediaKey = _loadedMediaKey;
+        unawaited(
+          widget.controller
+              .reportMediaDuration(desired.mediaId, duration)
+              .catchError((Object error) {
+                _durationReportedMediaKey = null;
+                debugPrint('Duration sync failed: $error');
+              }),
+        );
+      }
       final now = DateTime.now();
       if ((current - _lastObservedPosition).abs() >= .15) {
         _lastObservedPosition = current;
         _lastProgressAt = now;
         _playbackReady = true;
+        _stallRecoveryAttempts = 0;
+        _stallReported = false;
       }
       if (mounted) {
         setState(() {
@@ -437,15 +743,29 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
           ? rawTarget.clamp(0.0, duration)
           : rawTarget.clamp(0.0, double.infinity);
       final drift = (current - target).abs();
-      if (drift > 2) {
-        await player.seekTo(Duration(milliseconds: (target * 1000).round()));
-      }
-      if (desired.playing && !player.value.isPlaying) await player.play();
       if (!desired.playing && player.value.isPlaying) await player.pause();
+      if (drift > 5 &&
+          _playbackReady &&
+          (drift > 15 ||
+              now.difference(_lastHardSyncAt) >= const Duration(seconds: 10)) &&
+          !player.value.isBuffering &&
+          !player.value.isCompleted &&
+          (duration <= 0 || target < duration - .5)) {
+        await player.seekTo(Duration(milliseconds: (target * 1000).round()));
+        _lastHardSyncAt = now;
+        _lastProgressAt = now;
+      }
+      if (desired.playing &&
+          !player.value.isPlaying &&
+          !player.value.isCompleted &&
+          (duration <= 0 || target < duration - .5)) {
+        await player.play();
+      }
       _syncAutoPip();
       await _syncWakeLock();
-      if (player.value.position >= player.value.duration &&
-          player.value.duration > Duration.zero) {
+      if (player.value.duration > Duration.zero &&
+          (player.value.isCompleted ||
+              player.value.position >= player.value.duration)) {
         if (_endedMediaKey != _loadedMediaKey) {
           _endedMediaKey = _loadedMediaKey;
           await player.pause();
@@ -460,10 +780,18 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
           widget.controller.openPostPlaybackShelf();
         }
       } else if (desired.playing &&
+          !_recoveringStall &&
           !_stallReported &&
-          now.difference(_lastProgressAt) >= const Duration(seconds: 15)) {
+          now.difference(_lastProgressAt) >=
+              (player.value.isBuffering
+                  ? const Duration(seconds: 25)
+                  : const Duration(seconds: 15))) {
         _stallReported = true;
-        if (mounted) {
+        if (_stallRecoveryAttempts < 2) {
+          _stallRecoveryAttempts++;
+          _recoveringStall = true;
+          unawaited(_retryVideo().whenComplete(() => _recoveringStall = false));
+        } else if (mounted) {
           setState(() {
             _playerError =
                 'The stream stopped advancing. Tap Retry video to reconnect.';
@@ -479,13 +807,19 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   Future<void> _retryVideo() async {
     if (_loading) return;
+    await widget.controller.refreshExpiredWebMedia();
     final failed = _player;
     _player = null;
     _providerBrowser = null;
+    if (_nativeCrunchyroll) {
+      _nativeCrunchyroll = false;
+      await CrunchyrollRoomPlayer.close();
+    }
     _providerBrowserMediaKey = null;
     _loadedMediaKey = null;
     _playerError = null;
     _stallReported = false;
+    _lastProgressAt = DateTime.now();
     if (mounted) {
       setState(() {});
       await WidgetsBinding.instance.endOfFrame;
@@ -495,6 +829,10 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   }
 
   Future<void> _lockPlayer() async {
+    if (_nativeCrunchyroll) {
+      _nativeCrunchyroll = false;
+      await CrunchyrollRoomPlayer.close();
+    }
     final player = _player;
     if (player == null && _providerBrowser == null && _loadedMediaKey == null) {
       return;
@@ -536,12 +874,14 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.controller.removeListener(_checkShareRequests);
     DeviceFeatures.onPipModeChanged(null);
     _nativeAutoPipEnabled = false;
     unawaited(DeviceFeatures.setPipAutoEnabled(false));
     _telemetry?.cancel();
     _controlsTimer?.cancel();
     _player?.dispose();
+    if (_nativeCrunchyroll) unawaited(CrunchyrollRoomPlayer.close());
     _resolver.close();
     _playerRevision.dispose();
     if (_wakeLockEnabled) unawaited(WakelockPlus.disable());
@@ -566,6 +906,10 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
     final desired = widget.controller.watchState;
     if (desired == null) return;
+    if (_nativeCrunchyroll) {
+      await _samplePlayer();
+      return;
+    }
     if (_usesProviderBrowser(desired)) {
       await _synchronizeProviderBrowser(desired);
       return;
@@ -606,7 +950,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
     // Explicit PiP is useful for both playing and paused video. Requiring the
     // room event to have propagated first made this button look unresponsive.
     if (_usesProviderBrowser(widget.controller.watchState)) return;
-    if (_player?.value.isInitialized != true) return;
+    if (_player?.value.isInitialized != true && !_nativeCrunchyroll) return;
     await _handlePipModeChanged(true);
     final entered = await DeviceFeatures.enterPip();
     if (!entered) await _handlePipModeChanged(false);
@@ -615,7 +959,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   Future<void> _syncWakeLock() async {
     final shouldEnable =
         widget.controller.watchState?.playing == true &&
-        _player?.value.isInitialized == true;
+        (_player?.value.isInitialized == true || _nativeCrunchyroll);
     if (shouldEnable == _wakeLockEnabled) return;
     _wakeLockEnabled = shouldEnable;
     await WakelockPlus.toggle(enable: shouldEnable);
@@ -641,7 +985,11 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: Listenable.merge([widget.controller, _playerRevision]),
+    animation: Listenable.merge([
+      widget.controller,
+      widget.controller.voice,
+      _playerRevision,
+    ]),
     builder: (context, _) {
       if (!_videoAccessReady && _player != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _lockPlayer());
@@ -657,8 +1005,17 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
         WidgetsBinding.instance.addPostFrameCallback((_) => _ensureVideo());
       }
       _syncAutoPip();
-      final player = _player?.value.isInitialized == true
+      final screenTrack = widget.controller.voice.screenTrack;
+      final player = screenTrack != null
+          ? VideoTrackRenderer(
+              screenTrack,
+              key: ObjectKey(screenTrack),
+              fit: VideoViewFit.contain,
+            )
+          : _player?.value.isInitialized == true
           ? VideoPlayer(_player!, key: _videoSurfaceKey)
+          : _nativeCrunchyroll
+          ? const CrunchyrollRoomSurface()
           : _providerBrowser != null && _usesProviderBrowser(state)
           ? WebViewWidget(controller: _providerBrowser!)
           : null;
@@ -781,7 +1138,9 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
                 onPeople: () => setState(() => _peopleDrawerOpen = true),
               ),
               Expanded(
-                child: !_videoAccessReady
+                child: widget.controller.checkingVideoAccess
+                    ? const Center(child: WaveLoader(label: 'Joining room'))
+                    : !_videoAccessReady
                     ? _VideoAccessGate(
                         controller: widget.controller,
                         providerLabel: _sourceLabel(
@@ -793,13 +1152,25 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
                         controller: widget.controller,
                         resolvedTitle: _resolvedTitle,
                         showLoading:
-                            _loading ||
+                            (_loading && !_playbackReady) ||
                             (_player != null &&
-                                (!_playbackReady ||
-                                    _player!.value.isBuffering)),
+                                (!_playbackReady &&
+                                        widget.controller.watchState?.playing ==
+                                            true ||
+                                    (_player!.value.isBuffering &&
+                                        widget.controller.watchState?.playing ==
+                                            true &&
+                                        DateTime.now().difference(
+                                              _lastProgressAt,
+                                            ) >=
+                                            const Duration(seconds: 3)))),
                         playerAspectRatio: _player?.value.isInitialized == true
                             ? _player!.value.aspectRatio
                             : 16 / 9,
+                        isScreenShare:
+                            widget.controller.voice.screenTrack != null,
+                        isLocalScreenShare:
+                            widget.controller.voice.screenShareEnabled,
                         showPicker: widget.controller.shelfOpen,
                         onToggleControls: _toggleControls,
                         player: widget.controller.shelfOpen
@@ -984,6 +1355,16 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
       _showControls();
       return;
     }
+    if (_nativeCrunchyroll) {
+      if (state.playing) {
+        await CrunchyrollRoomPlayer.pause();
+      } else {
+        await CrunchyrollRoomPlayer.play();
+      }
+      await widget.controller.togglePlayback(_position);
+      _showControls();
+      return;
+    }
     if (_player == null) return;
     if (state.playing) {
       await _player!.pause();
@@ -998,7 +1379,9 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   Future<void> _seek(double value) async {
     setState(() => _position = value);
     final state = widget.controller.watchState;
-    if (_usesProviderBrowser(state)) {
+    if (_nativeCrunchyroll) {
+      await CrunchyrollRoomPlayer.seek(value);
+    } else if (_usesProviderBrowser(state)) {
       try {
         await _providerBrowser?.runJavaScript('''
           (() => {
@@ -1016,7 +1399,7 @@ class _WatchRoomScreenState extends State<WatchRoomScreen>
   Future<void> _toggleMute() async {
     final next = !widget.controller.muted;
     widget.controller.setMuted(next);
-    await _player?.setVolume(next ? 0 : widget.controller.volume);
+    await _restoreLocalAudio();
     try {
       await _providerBrowser?.runJavaScript(
         "document.querySelectorAll('video').forEach(v => v.muted = ${next ? 'true' : 'false'});",
@@ -1145,15 +1528,95 @@ class _RoomHeader extends StatelessWidget {
               icon: const Icon(Icons.tune_rounded),
               style: IconButton.styleFrom(backgroundColor: Colors.transparent),
             ),
-            const Expanded(
-              child: Text(
-                "LET'S COOK",
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2.2,
-                ),
+            Expanded(
+              child: ListenableBuilder(
+                listenable: Listenable.merge([controller, controller.voice]),
+                builder: (context, _) {
+                  final liveMembers = controller.voice.members
+                      .where((member) => member.microphoneOn)
+                      .toList();
+                  final myId = controller.profile?.id;
+                  final localIdentity = controller.voice.localIdentity;
+                  final members = [
+                    if (controller.voice.localMicrophoneActive)
+                      VoiceMember(
+                        localIdentity ?? myId ?? 'local',
+                        controller.displayName,
+                        true,
+                        controller.voice.localSpeaking,
+                      ),
+                    ...liveMembers.where(
+                      (member) =>
+                          member.identity != localIdentity &&
+                          member.identity != myId,
+                    ),
+                  ];
+                  if (members.isEmpty) {
+                    return const Text(
+                      'XYNK',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 21,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 2.2,
+                      ),
+                    );
+                  }
+                  return Center(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final member in members.take(6))
+                            Builder(
+                              builder: (context) {
+                                final isMe =
+                                    member.identity == localIdentity ||
+                                    member.identity == myId ||
+                                    member.identity == 'local';
+                                final person = controller.activeParticipants
+                                    .cast<Map<String, dynamic>?>()
+                                    .firstWhere(
+                                      (item) =>
+                                          item?['userId']?.toString() ==
+                                          member.identity,
+                                      orElse: () => null,
+                                    );
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 2,
+                                  ),
+                                  child: Tooltip(
+                                    message:
+                                        '${person?['displayName'] ?? member.name} · Mic on',
+                                    child: _HeaderVoiceAvatar(
+                                      name:
+                                          (person?['displayName'] ??
+                                                  member.name)
+                                              .toString(),
+                                      avatarUrl:
+                                          person?['avatarUrl']?.toString() ??
+                                          (isMe
+                                              ? controller.profile?.avatarUrl
+                                              : null),
+                                      isHost: person?['role'] == 'HOST',
+                                      speaking: member.speaking,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          if (members.length > 6)
+                            Text(
+                              '+${members.length - 6}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
             IconButton(
@@ -1197,6 +1660,147 @@ class _RoomHeader extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _HeaderVoiceAvatar extends StatefulWidget {
+  const _HeaderVoiceAvatar({
+    required this.name,
+    required this.avatarUrl,
+    required this.isHost,
+    required this.speaking,
+  });
+
+  final String name;
+  final String? avatarUrl;
+  final bool isHost;
+  final bool speaking;
+
+  @override
+  State<_HeaderVoiceAvatar> createState() => _HeaderVoiceAvatarState();
+}
+
+class _HeaderVoiceAvatarState extends State<_HeaderVoiceAvatar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 750),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.speaking) _pulse.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _HeaderVoiceAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.speaking == oldWidget.speaking) return;
+    if (widget.speaking) {
+      _pulse.repeat(reverse: true);
+    } else {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = widget.name.trim().isEmpty
+        ? '?'
+        : widget.name.trim()[0].toUpperCase();
+    final url = widget.avatarUrl?.trim() ?? '';
+    final resolvedUrl = url.startsWith('/') ? 'https://xynk.in$url' : url;
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, _) => Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF261B36),
+              border: Border.all(
+                color: widget.speaking
+                    ? const Color(0xFF67F5B4)
+                    : const Color(0xFF80638F),
+                width: widget.speaking ? 2 + _pulse.value : 1,
+              ),
+              boxShadow: widget.speaking
+                  ? [
+                      BoxShadow(
+                        color: const Color(
+                          0xFF67F5B4,
+                        ).withValues(alpha: .2 + _pulse.value * .4),
+                        blurRadius: 5 + _pulse.value * 9,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: ClipOval(
+              child: resolvedUrl.isEmpty
+                  ? ColoredBox(
+                      color: const Color(0xFF895DA8),
+                      child: Center(
+                        child: Text(
+                          initial,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    )
+                  : Image.network(
+                      resolvedUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Center(child: Text(initial)),
+                    ),
+            ),
+          ),
+          if (widget.speaking)
+            Positioned(
+              left: -9,
+              bottom: 5,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  for (final scale in [0.55, 1.0, 0.7])
+                    Container(
+                      width: 2.5,
+                      height: 5 + 10 * scale * (0.35 + _pulse.value * 0.65),
+                      margin: const EdgeInsets.symmetric(horizontal: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF67F5B4),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (widget.isHost)
+            const Positioned(
+              right: -1,
+              bottom: -1,
+              child: Icon(
+                Icons.star_rounded,
+                size: 14,
+                color: Color(0xFFFFD36D),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class _RoomControlsSheet extends StatelessWidget {
@@ -1243,55 +1847,73 @@ class _RoomControlsSheet extends StatelessWidget {
               'WHO CAN SET VIDEO',
               style: TextStyle(fontWeight: FontWeight.w900),
             ),
-            RadioListTile<String>(
-              value: 'HOSTS_ONLY',
+            RadioGroup<String>(
               groupValue: controller.queueMode,
-              onChanged: host ? (v) => controller.setRoomQueueMode(v!) : null,
-              title: const Text('Host only'),
-              subtitle: const Text('Only the host or co-host chooses videos'),
-              secondary: const Icon(Icons.workspace_premium_rounded),
-            ),
-            RadioListTile<String>(
-              value: 'PERMISSION',
-              groupValue: controller.queueMode,
-              onChanged: host ? (v) => controller.setRoomQueueMode(v!) : null,
-              title: const Text('Selected people'),
-              subtitle: const Text(
-                'Grant video access from the participants list',
+              onChanged: (value) {
+                if (host && value != null) controller.setRoomQueueMode(value);
+              },
+              child: Column(
+                children: [
+                  RadioListTile<String>(
+                    value: 'HOSTS_ONLY',
+                    enabled: host,
+                    title: const Text('Host only'),
+                    subtitle: const Text(
+                      'Only the host or co-host chooses videos',
+                    ),
+                    secondary: const Icon(Icons.workspace_premium_rounded),
+                  ),
+                  RadioListTile<String>(
+                    value: 'PERMISSION',
+                    enabled: host,
+                    title: const Text('Selected people'),
+                    subtitle: const Text(
+                      'Grant video access from the participants list',
+                    ),
+                    secondary: const Icon(Icons.person_add_alt_1_rounded),
+                  ),
+                  RadioListTile<String>(
+                    value: 'VOTE',
+                    enabled: host,
+                    title: const Text("Let's vote"),
+                    subtitle: const Text(
+                      'Everyone can add; the highest vote plays next',
+                    ),
+                    secondary: const Icon(Icons.how_to_vote_rounded),
+                  ),
+                ],
               ),
-              secondary: const Icon(Icons.person_add_alt_1_rounded),
-            ),
-            RadioListTile<String>(
-              value: 'VOTE',
-              groupValue: controller.queueMode,
-              onChanged: host ? (v) => controller.setRoomQueueMode(v!) : null,
-              title: const Text("Let's vote"),
-              subtitle: const Text(
-                'Everyone can add; the highest vote plays next',
-              ),
-              secondary: const Icon(Icons.how_to_vote_rounded),
             ),
             const Divider(),
             const Text(
               'WHO CAN JOIN',
               style: TextStyle(fontWeight: FontWeight.w900),
             ),
-            for (final option in const [
-              ('PUBLIC', 'Everyone', Icons.public_rounded),
-              ('FRIENDS', 'Friends', Icons.people_alt_rounded),
-              ('INVITE', 'Invite only', Icons.lock_rounded),
-            ])
-              RadioListTile<String>(
-                value: option.$1,
-                groupValue: privacy,
-                onChanged: host
-                    ? (v) => controller.setRoomAudience(
-                        v == 'INVITE' ? 'PRIVATE' : v!,
-                      )
-                    : null,
-                title: Text(option.$2),
-                secondary: Icon(option.$3),
+            RadioGroup<String>(
+              groupValue: privacy,
+              onChanged: (value) {
+                if (host && value != null) {
+                  controller.setRoomAudience(
+                    value == 'INVITE' ? 'PRIVATE' : value,
+                  );
+                }
+              },
+              child: Column(
+                children: [
+                  for (final option in const [
+                    ('PUBLIC', 'Everyone', Icons.public_rounded),
+                    ('FRIENDS', 'Friends', Icons.people_alt_rounded),
+                    ('INVITE', 'Invite only', Icons.lock_rounded),
+                  ])
+                    RadioListTile<String>(
+                      value: option.$1,
+                      enabled: host,
+                      title: Text(option.$2),
+                      secondary: Icon(option.$3),
+                    ),
+                ],
               ),
+            ),
           ],
         ),
       ),
@@ -1339,7 +1961,7 @@ class _RoomSourcePicker extends StatelessWidget {
                     ),
                     const Expanded(
                       child: Text(
-                        "LET'S COOK",
+                        "XYNK",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 23,
@@ -1589,6 +2211,8 @@ class _WatchMode extends StatelessWidget {
     required this.resolvedTitle,
     required this.showLoading,
     required this.playerAspectRatio,
+    required this.isScreenShare,
+    required this.isLocalScreenShare,
     required this.player,
     required this.showControls,
     required this.position,
@@ -1607,6 +2231,8 @@ class _WatchMode extends StatelessWidget {
   final String? resolvedTitle;
   final bool showLoading;
   final double playerAspectRatio;
+  final bool isScreenShare;
+  final bool isLocalScreenShare;
   final Widget? player;
   final bool showControls;
   final double position;
@@ -1625,6 +2251,7 @@ class _WatchMode extends StatelessWidget {
     final playerCard = _PlayerCard(
       compact: true,
       aspectRatio: playerAspectRatio,
+      expand: isScreenShare,
       player: Stack(
         fit: StackFit.expand,
         children: [
@@ -1637,6 +2264,24 @@ class _WatchMode extends StatelessWidget {
                 ),
               ),
           if (showLoading) const _PulsingVideoLoader(),
+          if (isLocalScreenShare)
+            const Positioned(
+              left: 10,
+              top: 10,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xCC131922),
+                  borderRadius: BorderRadius.all(Radius.circular(8)),
+                ),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  child: Text(
+                    'Sharing · chat below',
+                    style: TextStyle(color: Colors.white, fontSize: 11),
+                  ),
+                ),
+              ),
+            ),
           if (controller.watchState != null && !showPicker)
             GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -1661,7 +2306,8 @@ class _WatchMode extends StatelessWidget {
         ],
       ),
     );
-    final emptyPlayer = controller.watchState == null && !showPicker
+    final emptyPlayer =
+        controller.watchState == null && !showPicker && !isScreenShare
         ? _EmptyPlayer(onFindVideo: () => controller.setShelfOpen(true))
         : const SizedBox.shrink();
     final orientation = MediaQuery.orientationOf(context);
@@ -1678,14 +2324,22 @@ class _WatchMode extends StatelessWidget {
                     : 16 / 9;
                 final maxWidth = math.max(0.0, constraints.maxWidth - 24);
                 final maxHeight = math.max(0.0, constraints.maxHeight - 24);
-                final width = math.min(maxWidth, maxHeight * safeAspectRatio);
+                final width = isLocalScreenShare
+                    ? math.min(maxWidth * .58, 480.0)
+                    : isScreenShare
+                    ? maxWidth
+                    : math.min(maxWidth, maxHeight * safeAspectRatio);
                 return Column(
                   children: [
                     Expanded(
                       child: Center(
                         child: SizedBox(
                           width: width,
-                          height: width / safeAspectRatio,
+                          height: isLocalScreenShare
+                              ? math.min(maxHeight * .5, 270.0)
+                              : isScreenShare
+                              ? maxHeight
+                              : width / safeAspectRatio,
                           child: playerCard,
                         ),
                       ),
@@ -1720,17 +2374,23 @@ class _WatchMode extends StatelessWidget {
             playerAspectRatio.isFinite && playerAspectRatio >= 1.2
             ? playerAspectRatio.clamp(1.2, 2.5)
             : 16 / 9;
-        final playerHeight = math.min(
-          availableWidth / safeAspectRatio,
-          constraints.maxHeight * .28,
-        );
+        final playerHeight = isLocalScreenShare
+            ? math.min(constraints.maxHeight * .24, availableWidth / 2.2)
+            : isScreenShare
+            ? math.min(constraints.maxHeight * .5, availableWidth * 1.25)
+            : math.min(
+                availableWidth / safeAspectRatio,
+                constraints.maxHeight * .28,
+              );
         return Column(
           children: [
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Center(
                 child: SizedBox(
-                  width: playerHeight * safeAspectRatio,
+                  width: isScreenShare
+                      ? availableWidth
+                      : playerHeight * safeAspectRatio,
                   height: playerHeight,
                   child: playerCard,
                 ),
@@ -1963,11 +2623,13 @@ class _PlayerCard extends StatelessWidget {
     required this.player,
     this.compact = false,
     this.aspectRatio = 16 / 9,
+    this.expand = false,
   });
 
   final Widget? player;
   final bool compact;
   final double aspectRatio;
+  final bool expand;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -1984,83 +2646,29 @@ class _PlayerCard extends StatelessWidget {
         ),
       ],
     ),
-    child: AspectRatio(
-      aspectRatio: aspectRatio,
-      child:
-          player ??
-          const Center(
-            child: Icon(
-              Icons.ondemand_video_rounded,
-              size: 42,
-              color: AppColors.muted,
-            ),
+    child: expand
+        ? SizedBox.expand(child: player)
+        : AspectRatio(
+            aspectRatio: aspectRatio,
+            child:
+                player ??
+                const Center(
+                  child: Icon(
+                    Icons.ondemand_video_rounded,
+                    size: 42,
+                    color: AppColors.muted,
+                  ),
+                ),
           ),
-    ),
   );
 }
 
-class _PulsingVideoLoader extends StatefulWidget {
+class _PulsingVideoLoader extends StatelessWidget {
   const _PulsingVideoLoader();
 
   @override
-  State<_PulsingVideoLoader> createState() => _PulsingVideoLoaderState();
-}
-
-class _PulsingVideoLoaderState extends State<_PulsingVideoLoader>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat(reverse: true);
-  late final Animation<double> _scale = Tween<double>(
-    begin: .82,
-    end: 1.12,
-  ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => IgnorePointer(
-    child: ColoredBox(
-      color: const Color(0x88000000),
-      child: Center(
-        child: ScaleTransition(
-          scale: _scale,
-          child: Container(
-            width: 74,
-            height: 74,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xE61A1225),
-              border: Border.all(color: AppColors.lime, width: 2),
-              boxShadow: const [
-                BoxShadow(color: Color(0x779C5CFF), blurRadius: 24),
-              ],
-            ),
-            child: const Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.play_arrow_rounded, color: Colors.white, size: 30),
-                Text(
-                  'LOADING',
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 8,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.1,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
+  Widget build(BuildContext context) =>
+      const WaveLoader(label: 'Starting video', showScrim: true, size: 58);
 }
 
 class _RailLabel extends StatelessWidget {
@@ -2718,38 +3326,33 @@ class _ChatPanelState extends State<_ChatPanel> {
             Row(
               children: [
                 IconButton(
-                  onPressed: widget.controller.voice.busy
-                      ? null
-                      : () async {
-                          final room = widget.controller.activeRoom;
-                          if (room == null) return;
-                          try {
-                            final granted =
-                                await DeviceFeatures.requestMicrophone();
-                            if (!context.mounted) return;
-                            if (!granted) {
-                              throw Exception(
-                                'Microphone permission is required for room voice.',
-                              );
-                            }
-                            await widget.controller.voice.toggleMicrophone(
-                              room.id,
-                            );
-                          } catch (exception) {
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  widget.controller.voice.error ??
-                                      exception.toString().replaceFirst(
-                                        'Exception: ',
-                                        '',
-                                      ),
+                  onPressed: () async {
+                    final room = widget.controller.activeRoom;
+                    if (room == null) return;
+                    try {
+                      final granted = await DeviceFeatures.requestMicrophone();
+                      if (!context.mounted) return;
+                      if (!granted) {
+                        throw Exception(
+                          'Microphone permission is required for room voice.',
+                        );
+                      }
+                      await widget.controller.voice.toggleMicrophone(room.id);
+                    } catch (exception) {
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            widget.controller.voice.error ??
+                                exception.toString().replaceFirst(
+                                  'Exception: ',
+                                  '',
                                 ),
-                              ),
-                            );
-                          }
-                        },
+                          ),
+                        ),
+                      );
+                    }
+                  },
                   icon: Icon(
                     widget.controller.voice.microphoneEnabled
                         ? Icons.mic_rounded
@@ -2800,6 +3403,39 @@ class _ChatPanelState extends State<_ChatPanel> {
                           final room = widget.controller.activeRoom;
                           if (room == null) return;
                           try {
+                            final me = widget.controller.activeParticipants
+                                .where(
+                                  (person) =>
+                                      person['userId']?.toString() ==
+                                      widget.controller.profile?.id,
+                                )
+                                .firstOrNull;
+                            if (!widget.controller.voice.screenShareEnabled &&
+                                room.role != 'HOST' &&
+                                me?['canShareScreen'] != true) {
+                              if (me?['screenShareRequested'] != true)
+                                await widget.controller.api.requestScreenShare(
+                                  room.id,
+                                );
+                              if (context.mounted)
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Screen share request sent to the host.',
+                                    ),
+                                  ),
+                                );
+                              return;
+                            }
+                            if (!widget.controller.voice.screenShareEnabled &&
+                                !await confirmScreenShare(context)) {
+                              return;
+                            }
+                            if (!widget.controller.voice.screenShareEnabled &&
+                                room.role != 'HOST')
+                              await widget.controller.voice.refreshPermissions(
+                                room.id,
+                              );
                             await widget.controller.startScreenSharing(
                               targetRoomId: room.id,
                             );
@@ -4386,6 +5022,7 @@ class _PeoplePanelState extends State<_PeoplePanel> {
     );
     var friendNow = isFriend;
     var canAdd = person['canAddVideos'] == true;
+    var canShare = person['canShareScreen'] == true;
     var canView = person['canViewVideo'] == true;
     var accessRequested = person['videoAccessRequested'] == true;
     await showModalBottomSheet<void>(
@@ -4412,6 +5049,18 @@ class _PeoplePanelState extends State<_PeoplePanel> {
                 ),
                 if (!isMe) ...[
                   const SizedBox(height: 18),
+                  ListTile(
+                    title: Text(
+                      widget.controller.voice.isListeningTo(userId)
+                          ? 'Mute for me'
+                          : 'Listen again',
+                    ),
+                    leading: const Icon(Icons.hearing_rounded),
+                    onTap: () async {
+                      await widget.controller.voice.toggleListeningTo(userId);
+                      if (context.mounted) Navigator.pop(sheetContext);
+                    },
+                  ),
                   FilledButton.icon(
                     onPressed: () async {
                       if (friendNow) {
@@ -4432,6 +5081,53 @@ class _PeoplePanelState extends State<_PeoplePanel> {
                 ],
                 if (widget.controller.canControlWatch && !isMe) ...[
                   const Divider(height: 28),
+                  ListTile(
+                    title: const Text('Microphone'),
+                    subtitle: const Text(
+                      'Mute now or ask the member to unmute',
+                    ),
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (action) async {
+                        final room = widget.controller.activeRoom;
+                        if (room != null)
+                          await widget.controller.api.hostMicAction(
+                            room.id,
+                            userId,
+                            action,
+                          );
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                          value: 'MUTE',
+                          child: Text('Mute microphone'),
+                        ),
+                        PopupMenuItem(
+                          value: 'REQUEST_UNMUTE',
+                          child: Text('Ask to unmute'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SwitchListTile(
+                    value: canShare,
+                    title: Text(
+                      person['screenShareRequested'] == true
+                          ? 'Screen share requested'
+                          : 'Can share screen',
+                    ),
+                    subtitle: const Text('Only the host grants screen sharing'),
+                    onChanged: (value) async {
+                      final room = widget.controller.activeRoom;
+                      if (room == null) return;
+                      await widget.controller.api.setScreenPermission(
+                        room.id,
+                        userId,
+                        value,
+                      );
+                      setSheetState(() => canShare = value);
+                      await _load();
+                    },
+                  ),
                   SwitchListTile(
                     value: canAdd,
                     title: const Text('Can add videos'),
@@ -4482,6 +5178,24 @@ class _PeoplePanelState extends State<_PeoplePanel> {
                     },
                   ),
                 ],
+                if (!isMe &&
+                    (widget.controller.activeRoom?.role == 'HOST' ||
+                        (widget.controller.activeRoom?.role == 'CO_HOST' &&
+                            person['role'] == 'MEMBER')))
+                  TextButton.icon(
+                    onPressed: () async {
+                      final room = widget.controller.activeRoom;
+                      if (room == null) return;
+                      await widget.controller.api.kickRoomMember(
+                        room.id,
+                        userId,
+                      );
+                      if (context.mounted) Navigator.pop(sheetContext);
+                      await _load();
+                    },
+                    icon: const Icon(Icons.person_remove_rounded),
+                    label: const Text('Remove from room'),
+                  ),
               ],
             ),
           ),
@@ -4493,7 +5207,9 @@ class _PeoplePanelState extends State<_PeoplePanel> {
   Widget _participantTile(Map<String, dynamic> person) {
     final userId = (person['userId'] ?? person['id'])?.toString() ?? '';
     final canManage =
-        widget.controller.canControlWatch &&
+        (widget.controller.canControlWatch ||
+            (widget.controller.activeRoom?.role == 'CO_HOST' &&
+                person['role'] == 'MEMBER')) &&
         userId.isNotEmpty &&
         userId != widget.controller.profile?.id;
     return ListTile(
@@ -5243,6 +5959,8 @@ class _PartyGlow extends StatelessWidget {
 String _time(double seconds) {
   if (!seconds.isFinite || seconds < 0) return '0:00';
   final total = seconds.floor();
-  final minutes = total ~/ 60;
-  return '$minutes:${(total % 60).toString().padLeft(2, '0')}';
+  final minutes = (total ~/ 60) % 60;
+  final clock = '$minutes:${(total % 60).toString().padLeft(2, '0')}';
+  final hours = total ~/ 3600;
+  return hours > 0 ? '$hours:${clock.padLeft(5, '0')}' : clock;
 }

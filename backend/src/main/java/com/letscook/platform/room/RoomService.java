@@ -23,6 +23,9 @@ public interface RoomService {
     List<RoomDtos.RoomMember> members(CurrentUser actor,UUID roomId);
     /** Changes a non-host member's screen-sharing grant as owner. */
     void setScreenPermission(CurrentUser actor,UUID roomId,UUID userId,boolean allowed);
+    /** Records a member's request for host approval before screen sharing. */
+    void requestScreenShare(CurrentUser actor,UUID roomId);
+    void hostMicAction(CurrentUser actor,UUID roomId,UUID userId,String action);
     /** Removes and bans a non-owner member. */
     void kickMember(CurrentUser actor,UUID roomId,UUID userId);
     /** Directly invites a user after membership, block, and invite-preference checks. */

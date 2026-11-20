@@ -7,7 +7,7 @@ export class AuthService {
     url: window.location.protocol === 'https:'
       ? window.location.origin
       : `http://${window.location.hostname}:8180`,
-    realm: 'lets-cook',
+    realm: 'xynk',
     clientId: 'lets-cook-web'
   });
 
@@ -15,10 +15,31 @@ export class AuthService {
   readonly displayName = signal('Guest');
   readonly available = signal(true);
   readonly failureMessage = signal('');
+  private refreshTimer?: ReturnType<typeof setInterval>;
+
+  private applySession(authenticated: boolean): void {
+    this.available.set(true);
+    this.failureMessage.set('');
+    this.authenticated.set(authenticated);
+    this.displayName.set(authenticated
+      ? (this.keycloak.tokenParsed?.['name'] as string
+        ?? this.keycloak.tokenParsed?.['preferred_username'] as string
+        ?? 'Member')
+      : 'Guest');
+    if (authenticated && !this.refreshTimer) {
+      this.refreshTimer = setInterval(() => {
+        if (this.keycloak.authenticated) {
+          void this.keycloak.updateToken(60).catch(() => {
+            // Retry on the next interval or authenticated API request.
+          });
+        }
+      }, 60_000);
+    }
+  }
 
   async initialize(): Promise<void> {
     try {
-      const authenticated = await this.keycloak.init({
+      const initialization = this.keycloak.init({
         onLoad: 'check-sso',
         // Web Crypto (required by PKCE-S256) is unavailable on a plain HTTP
         // LAN origin. Keep PKCE enabled everywhere Chrome considers secure,
@@ -26,10 +47,24 @@ export class AuthService {
         pkceMethod: 'S256',
         checkLoginIframe: false
       });
-      this.authenticated.set(authenticated);
-      this.displayName.set(this.keycloak.tokenParsed?.['name'] as string
-        ?? this.keycloak.tokenParsed?.['preferred_username'] as string
-        ?? 'Member');
+      // If Keycloak finishes after the startup guard, restore the session as
+      // soon as it responds instead of leaving the page in an error state.
+      let timedOut = false;
+      void initialization.then(authenticated => {
+        if (timedOut) this.applySession(authenticated);
+      }).catch(() => {});
+      // A stalled silent SSO request must not leave the entire app blank.
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const authenticated = await Promise.race([
+        initialization,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            reject(new Error('Authentication startup timed out'));
+          }, 8000);
+        })
+      ]).finally(() => { if (timeout) clearTimeout(timeout); });
+      this.applySession(authenticated);
     } catch {
       this.available.set(false);
       this.failureMessage.set(
@@ -48,7 +83,17 @@ export class AuthService {
   }
 
   logout(): Promise<void> {
-    return this.keycloak.logout({ redirectUri: window.location.origin });
+    // Capture the URL while the ID token is still available so Keycloak can
+    // invalidate the exact SSO session, then switch the SPA to signed-out state
+    // immediately instead of showing authenticated Home during the redirect.
+    const logoutUrl = this.keycloak.createLogoutUrl({ redirectUri: window.location.origin });
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.refreshTimer = undefined;
+    this.keycloak.clearToken();
+    this.authenticated.set(false);
+    this.displayName.set('Guest');
+    window.location.replace(logoutUrl);
+    return new Promise<void>(() => {});
   }
 
   async token(): Promise<string> {

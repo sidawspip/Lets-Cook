@@ -115,6 +115,18 @@ public class RoomController {
         roomService.setScreenPermission(user(jwt),roomId,userId,Boolean.TRUE.equals(body.get("allowed")));
     }
 
+    /** Asks the host for permission to share a screen. */
+    @PostMapping("/{roomId}/screen-share-request")
+    void requestScreenShare(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID roomId) {
+        roomService.requestScreenShare(user(jwt), roomId);
+    }
+
+    @PostMapping("/{roomId}/members/{userId}/microphone-action")
+    void microphoneAction(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID roomId, @PathVariable UUID userId,
+                          @RequestBody java.util.Map<String,String> body) {
+        roomService.hostMicAction(user(jwt),roomId,userId,body.getOrDefault("action",""));
+    }
+
     /** Removes and bans a non-owner room member; owner only. */
     @DeleteMapping("/{roomId}/members/{userId}")
     void kickMember(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID roomId, @PathVariable UUID userId) {

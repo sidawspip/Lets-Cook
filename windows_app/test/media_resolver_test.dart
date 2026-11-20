@@ -32,6 +32,17 @@ void main() {
     );
   });
 
+  test('browser-discovered streams keep source page request headers', () {
+    final page = Uri.parse('https://videos.example/watch/queen-marika');
+    final stream = Uri.parse('https://cdn.example/media/video.mp4');
+
+    final headers = directMediaHttpHeaders(stream, sourcePage: page);
+
+    expect(headers['Referer'], page.toString());
+    expect(headers['Origin'], 'https://videos.example');
+    expect(headers['User-Agent'], contains('Chrome/'));
+  });
+
   test('normalizes public cloud share links without credentials', () {
     final drive = normalizePublicMediaLink(
       Uri.parse('https://drive.google.com/file/d/file-123/view'),
@@ -81,7 +92,9 @@ void main() {
   });
 
   test('normalized provider media resolves into the custom player', () async {
-    final resolver = SplitMediaResolver();
+    final resolver = SplitMediaResolver(
+      mediaProbe: (uri, {required sourceType, sourcePage}) async => true,
+    );
     addTearDown(resolver.close);
     const state = RoomWatchState(
       roomId: 'room-1',

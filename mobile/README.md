@@ -1,8 +1,8 @@
-# Let's Cook Mobile
+# Xynk Android app
 
-Android-first Flutter client for Lets Cook watch parties. It reuses the existing
+Android-first Flutter client for XYNK watch parties. It reuses the existing
 Spring API and Keycloak realm and defaults to the production deployment at
-`https://letscook.world`.
+`https://xynk.in`.
 
 ## Included in this milestone
 
@@ -20,8 +20,7 @@ Spring API and Keycloak realm and defaults to the production deployment at
 ## Run against production
 
 ```powershell
-cd mobile
-flutter run
+.\mobile\scripts\dev\run.ps1
 ```
 
 ## Run against the local Docker stack
@@ -29,11 +28,10 @@ flutter run
 Android emulators reach the host through `10.0.2.2`:
 
 ```powershell
-cd mobile
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api `
-  --dart-define=AUTH_BASE_URL=http://10.0.2.2:8180 `
-  --dart-define=APP_BASE_URL=http://10.0.2.2:4200
+.\mobile\scripts\dev\run.ps1 -Local
 ```
+
+The launcher runs from the Android project directory and forwards extra Flutter arguments. For example, `./mobile/scripts/dev/run.ps1 -Local -Device emulator-5554` selects an emulator.
 
 The debug manifest permits cleartext traffic for this local workflow. Release
 builds retain the HTTPS production default.
@@ -43,10 +41,11 @@ builds retain the HTTPS production default.
 ```powershell
 flutter analyze
 flutter test
-flutter build apk --debug
+.\mobile\scripts\prod\build.ps1
+.\mobile\scripts\prod\build.ps1 -Configuration Release
 ```
 
-The debug APK is written to `build/app/outputs/flutter-apk/app-debug.apk`.
+The default command creates `mobile/build/app/outputs/flutter-apk/app-debug.apk`. Release requires the private signing file and HTTPS endpoints. Copy `mobile/build-config.example.psd1` to ignored `mobile/build-config.psd1` to set the API, auth, and app URLs for this machine, or pass `-ApiBaseUrl`, `-AuthBaseUrl`, and `-AppBaseUrl` directly. `-Local` selects emulator URLs for a Debug build. `-DryRun` prints the Flutter command without building.
 
 ## Before Play Store release
 

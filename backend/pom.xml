@@ -14,7 +14,7 @@
     <groupId>com.letscook</groupId>
     <artifactId>platform</artifactId>
     <version>0.1.0</version>
-    <name>lets-cook-platform</name>
+    <name>xynk-platform</name>
 
     <properties>
         <java.version>21</java.version>

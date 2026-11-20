@@ -81,6 +81,17 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     }
   }
 
+  Future<void> _playMedia(Map<String, dynamic> item) async {
+    if ((item['mediaId'] ?? '').toString().trim().isEmpty) return;
+    await widget.controller.selectViewingActivity(
+      ViewingActivity.fromJson(item),
+      targetRoomId: widget.controller.activeRoom?.id,
+    );
+    if (mounted && widget.controller.activeRoom != null) {
+      Navigator.of(context).pop();
+    }
+  }
+
   List<Map<String, dynamic>> _maps(String key) =>
       (data[key] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
@@ -128,10 +139,12 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         ),
                         _BioSection(data: data),
                         _MediaSection(
+                          controller: widget.controller,
                           title: 'Gallery',
                           icon: Icons.photo_library_rounded,
                           items: _maps('gallery'),
                           emptyText: 'No public gallery items yet.',
+                          onTap: _playMedia,
                         ),
                         _ActivitySection(
                           activity: _maps('activityByDay'),
@@ -144,16 +157,20 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                           friendCount: _asInt(data['friendCount']),
                         ),
                         _MediaSection(
+                          controller: widget.controller,
                           title: 'History',
                           icon: Icons.history_rounded,
                           items: _maps('history'),
                           emptyText: 'Watch history is private or empty.',
+                          onTap: _playMedia,
                         ),
                         _MediaSection(
+                          controller: widget.controller,
                           title: 'Liked',
                           icon: Icons.favorite_rounded,
                           items: _maps('likedVideos'),
                           emptyText: 'No visible liked videos.',
+                          onTap: _playMedia,
                         ),
                         _InterestSection(
                           inferred: _numberMap('inferredInterests'),
@@ -976,14 +993,18 @@ class _DonutPainter extends CustomPainter {
 
 class _MediaSection extends StatelessWidget {
   const _MediaSection({
+    required this.controller,
     required this.title,
     required this.icon,
     required this.items,
     required this.emptyText,
+    required this.onTap,
   });
+  final WatchPartyController controller;
   final String title, emptyText;
   final IconData icon;
   final List<Map<String, dynamic>> items;
+  final Future<void> Function(Map<String, dynamic>) onTap;
   @override
   Widget build(BuildContext context) => _SectionCard(
     title: title,
@@ -1000,38 +1021,62 @@ class _MediaSection extends StatelessWidget {
                 final item = items[index];
                 return SizedBox(
                   width: 190,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(14),
-                          child: MediaPreview(
-                            mediaId: (item['mediaId'] ?? '').toString(),
-                            provider: (item['provider'] ?? 'YOUTUBE')
-                                .toString(),
-                            thumbnailUrl: item['thumbnailUrl']?.toString(),
-                            contentLabel: (item['title'] ?? 'Video').toString(),
+                  child: Tooltip(
+                    message: controller.activeRoom == null
+                        ? 'Create a room and play'
+                        : 'Add to the room queue',
+                    child: InkWell(
+                      onTap: () => onTap(item),
+                      borderRadius: BorderRadius.circular(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(14),
+                              child: MediaPreview(
+                                mediaId: (item['mediaId'] ?? '').toString(),
+                                provider: (item['provider'] ?? 'YOUTUBE')
+                                    .toString(),
+                                thumbnailUrl: item['thumbnailUrl']?.toString(),
+                                contentLabel: (item['title'] ?? 'Video')
+                                    .toString(),
+                              ),
+                            ),
                           ),
-                        ),
+                          const SizedBox(height: 7),
+                          Text(
+                            (item['title'] ?? 'Video').toString(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.play_circle_outline_rounded,
+                                size: 12,
+                                color: AppColors.muted,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  _providerLabel(
+                                    (item['provider'] ?? 'Video').toString(),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: AppColors.muted,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 7),
-                      Text(
-                        (item['title'] ?? 'Video').toString(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      Text(
-                        _providerLabel(
-                          (item['provider'] ?? 'Video').toString(),
-                        ),
-                        style: const TextStyle(
-                          color: AppColors.muted,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 );
               },

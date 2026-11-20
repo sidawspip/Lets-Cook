@@ -113,7 +113,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 color: AppColors.ink,
                               ),
                             )
-                          : const Text("Enter Let's Cook"),
+                          : const Text("Enter Xynk"),
                     ),
                     const SizedBox(height: 10),
                     OutlinedButton.icon(

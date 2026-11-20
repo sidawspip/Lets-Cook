@@ -13,8 +13,8 @@
 These credentials are for local UAT only. Seed or refresh them without deleting Docker data:
 
 ```powershell
-.\scripts\seed-uat-users.ps1
-.\scripts\run-uat.ps1
+.\backend\scripts\dev\seed-uat-users.ps1
+.\backend\scripts\dev\run-uat.ps1
 ```
 
 The automated suite checks multiple local users, distinct accounts for distinct emails, correct and incorrect room keys, waiting-room status, and `INVITE_AND_KEY` enforcement. Temporary rooms are removed afterward.
@@ -30,7 +30,7 @@ http://localhost:8180/realms/lets-cook/broker/google/endpoint
 Then configure the running UAT realm:
 
 ```powershell
-.\scripts\enable-google-login.ps1 `
+.\infra\scripts\prod\enable-google-login.ps1 `
   -ClientId 'YOUR_GOOGLE_CLIENT_ID' `
   -ClientSecret 'YOUR_GOOGLE_CLIENT_SECRET'
 ```
@@ -79,7 +79,7 @@ Use this short checklist after every production deployment. Do not use an admini
 
 ### Test entry points
 
-- Web: `https://letscook.world/`
+- Web: `https://xynk.in/`
 - Android release APK: `mobile/build/app/outputs/flutter-apk/app-release.apk`
 - For production smoke tests, use a dedicated provider-backed test account; no shared `demo / demo` account is enabled.
 - Android OAuth callback: `world.letscook.app:/oauthredirect`
@@ -88,7 +88,7 @@ Use this short checklist after every production deployment. Do not use an admini
 
 1. Open the web URL in a private browser window.
 2. Sign in with the smoke account and verify Home, Profile, provider pages, History, Like, room creation, room join, and logout.
-3. Choose **Continue with Google**. Complete the provider login manually and verify the browser returns to `letscook.world`, not a localhost URL.
+3. Choose **Continue with Google**. Complete the provider login manually and verify the browser returns to `xynk.in`, not a localhost URL.
 4. Sign out, then choose **Continue with X**. Complete the provider login manually. X may not return an email; the X-specific first-login flow must create the account without opening Keycloak's **Update Account Information** form.
 5. After each provider's first login, verify the profile is initialized from provider claims. Google should provide name, email, and avatar. X should provide its available name/handle, with email left empty when X does not supply one.
 6. Edit the display name, sign out, and sign in again with the same provider. Verify the user's edited display name is preserved.

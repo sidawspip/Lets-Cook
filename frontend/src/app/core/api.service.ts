@@ -22,6 +22,7 @@ export interface ProfileDashboard { profile:Profile; preferences:ProfilePreferen
 export interface Room {
   id: string;
   name: string;
+  ownerName?: string;
   description?: string;
   accessPolicy: AccessPolicy;
   role: RoomRole;
@@ -63,7 +64,7 @@ export interface FriendRequest { id: string; userId: string; username: string; d
 export interface SocialNotification { id:string; type:'FRIEND_REQUEST'|'DIRECT_MESSAGE'; userId:string; username:string; displayName:string; body?:string; unreadCount:number; createdAt:string; }
 export interface DirectMessage { id: string; senderId: string; recipientId: string; body: string; createdAt: string; }
 export interface RoomMember { userId: string; username: string; displayName: string; role: RoomRole; canShareScreen: boolean; canAddVideos: boolean; online: boolean; }
-export interface LiveParticipant { userId: string; username: string; displayName: string; avatarUrl?: string; role: RoomRole; canShareScreen: boolean; }
+export interface LiveParticipant { userId: string; username: string; displayName: string; avatarUrl?: string; role: RoomRole; canShareScreen: boolean; screenShareRequested?: boolean; }
 export interface RecentRoomPerson { userId:string; username:string; displayName:string; avatarUrl?:string; roomName:string; lastSeenAt:string; friend:boolean; }
 export interface RoomChatMessage { id: string; senderId: string; senderName: string; senderUsername?: string; avatarUrl?: string; body: string; type: 'MESSAGE'|'JOIN'|'LEAVE'|'VIDEO'|string; mediaProvider?: string; mediaId?: string; mediaTitle?: string; createdAt: string; }
 export type WatchProvider=
@@ -73,12 +74,12 @@ export type WatchProvider=
 export interface WatchState { roomId:string;provider:WatchProvider;sourceType:string;mediaId:string;sourceUrl?:string;thumbnailUrl?:string;title?:string;playing:boolean;positionSeconds:number;durationSeconds?:number;playbackRate:number;revision:number;updatedAt:string;serverTime:string;transitionUntil?:string; }
 export interface YoutubeResult { videoId:string; title:string; channelTitle:string; thumbnailUrl:string; }
 export interface YoutubeSearch { configured:boolean; results:YoutubeResult[]; message?:string; nextPageToken?:string; previousPageToken?:string; }
-export interface ResolvedWebMedia { pageUrl:string; sourceUrl:string; sourceType:'DIRECT_MP4'|'DIRECT_HLS'; title:string; siteName:string; }
+export interface ResolvedWebMedia { pageUrl:string; sourceUrl:string; sourceType:'DIRECT_MP4'|'DIRECT_HLS'; title:string; siteName:string; thumbnailUrl?:string; }
 export interface WatchQueueItem { id:string; provider:WatchProvider; mediaId:string; title:string; thumbnailUrl?:string; addedBy:string; addedByName:string; personalPosition:number; personalQueueItem:boolean; voteCount:number; votedByMe:boolean; createdAt:string; }
 export interface WatchQueue { mode:'HOSTS_ONLY'|'PERMISSION'|'VOTE'; transitionSeconds:number; canAdd:boolean; nextItemId?:string; skipVotes:number; skipRequired:number; skipVotedByMe:boolean; items:WatchQueueItem[]; }
 export interface SkipVoteResult { skipped:boolean; votes:number; required:number; state?:WatchState; }
-export interface PublicRoom { id:string;name:string;description?:string;accessPolicy:AccessPolicy;viewerCount:number;mediaTitle?:string;mediaId?:string;mediaProvider?:string;thumbnailUrl?:string;positionSeconds?:number;durationSeconds?:number;viewerAvatars:string[];joined:boolean; }
-export interface MediaLibraryItem { mediaId:string;provider:string;title:string;thumbnailUrl?:string;sourceUrl?:string;sensitive:boolean;playCount:number;watchSeconds:number;liked:boolean;inGallery:boolean;lastWatchedAt:string; }
+export interface PublicRoom { id:string;name:string;ownerName?:string;description?:string;accessPolicy:AccessPolicy;viewerCount:number;mediaTitle?:string;mediaId?:string;mediaProvider?:string;thumbnailUrl?:string;positionSeconds?:number;durationSeconds?:number;viewerAvatars:string[];joined:boolean; }
+export interface MediaLibraryItem { mediaId:string;provider:string;title:string;thumbnailUrl?:string;sourceUrl?:string;sourceType?:string;sensitive:boolean;playCount:number;watchSeconds:number;liked:boolean;inGallery:boolean;lastWatchedAt:string; }
 export interface MediaLibraryDashboard { history:MediaLibraryItem[];gallery:MediaLibraryItem[];likes:MediaLibraryItem[];categories:Record<string,number>;watchTogetherSeconds:number;friendCount:number;hideSensitiveContent:boolean; }
 
 @Injectable({ providedIn: 'root' })
@@ -150,6 +151,8 @@ export class ApiService {
   async sendMessage(friendId: string, body: string): Promise<DirectMessage> { return firstValueFrom(this.http.post<DirectMessage>(`${this.baseUrl}/social/messages/${friendId}`, { body }, { headers: await this.headers() })); }
   async roomMembers(roomId: string): Promise<RoomMember[]> { return firstValueFrom(this.http.get<RoomMember[]>(`${this.baseUrl}/rooms/${roomId}/members`, { headers: await this.headers() })); }
   async setScreenPermission(roomId: string, userId: string, allowed: boolean): Promise<void> { await firstValueFrom(this.http.post<void>(`${this.baseUrl}/rooms/${roomId}/members/${userId}/screen-permission`, { allowed }, { headers: await this.headers() })); }
+  async requestScreenShare(roomId: string): Promise<void> { await firstValueFrom(this.http.post<void>(`${this.baseUrl}/rooms/${roomId}/screen-share-request`, {}, { headers: await this.headers() })); }
+  async hostMicAction(roomId:string,userId:string,action:'MUTE'|'REQUEST_UNMUTE'):Promise<void>{await firstValueFrom(this.http.post<void>(`${this.baseUrl}/rooms/${roomId}/members/${userId}/microphone-action`,{action},{headers:await this.headers()}));}
   async kickMember(roomId: string, userId: string): Promise<void> { await firstValueFrom(this.http.delete<void>(`${this.baseUrl}/rooms/${roomId}/members/${userId}`, { headers: await this.headers() })); }
   async inviteUser(roomId:string,userId:string):Promise<void>{await firstValueFrom(this.http.post<void>(`${this.baseUrl}/rooms/${roomId}/invite-user/${userId}`,{},{headers:await this.headers()}));}
   async setLeadership(roomId:string,userId:string,action:'CO_HOST'|'MEMBER'|'TRANSFER'):Promise<void>{await firstValueFrom(this.http.post<void>(`${this.baseUrl}/rooms/${roomId}/members/${userId}/leadership/${action}`,{},{headers:await this.headers()}));}
@@ -181,7 +184,7 @@ export class ApiService {
   }
   async resolveWebMedia(pageUrl:string):Promise<ResolvedWebMedia> { return firstValueFrom(this.http.post<ResolvedWebMedia>(`${this.baseUrl}/media/resolve-web`,{pageUrl},{headers:await this.headers()})); }
   async watchQueue(roomId:string):Promise<WatchQueue> { return firstValueFrom(this.http.get<WatchQueue>(`${this.baseUrl}/rooms/${roomId}/watch/queue`,{headers:await this.headers()})); }
-  async addToWatchQueue(roomId:string,item:{provider:WatchProvider;mediaId:string;title:string;thumbnailUrl?:string}):Promise<WatchQueueItem> { return firstValueFrom(this.http.post<WatchQueueItem>(`${this.baseUrl}/rooms/${roomId}/watch/queue`,item,{headers:await this.headers()})); }
+  async addToWatchQueue(roomId:string,item:{provider:WatchProvider;mediaId:string;sourceUrl?:string;title:string;thumbnailUrl?:string}):Promise<WatchQueueItem> { return firstValueFrom(this.http.post<WatchQueueItem>(`${this.baseUrl}/rooms/${roomId}/watch/queue`,item,{headers:await this.headers()})); }
   async voteWatchQueue(roomId:string,queueId:string):Promise<void> { await firstValueFrom(this.http.post<void>(`${this.baseUrl}/rooms/${roomId}/watch/queue/${queueId}/vote`,{},{headers:await this.headers()})); }
   async removeWatchQueue(roomId:string,queueId:string):Promise<void> { await firstValueFrom(this.http.delete<void>(`${this.baseUrl}/rooms/${roomId}/watch/queue/${queueId}`,{headers:await this.headers()})); }
   async playNext(roomId:string,queueId?:string):Promise<WatchState> { return firstValueFrom(this.http.post<WatchState>(`${this.baseUrl}/rooms/${roomId}/watch/queue/next`,{queueId:queueId??null},{headers:await this.headers()})); }
@@ -197,7 +200,7 @@ export class ApiService {
   }
 
   async mediaLibrary():Promise<MediaLibraryDashboard>{return firstValueFrom(this.http.get<MediaLibraryDashboard>(`${this.baseUrl}/me/media`,{headers:await this.headers()}));}
-  async recordMedia(input:{mediaId:string;provider:string;title:string;thumbnailUrl?:string;sourceUrl?:string;watchSeconds?:number}):Promise<MediaLibraryItem>{return firstValueFrom(this.http.post<MediaLibraryItem>(`${this.baseUrl}/me/media/history`,input,{headers:await this.headers()}));}
+  async recordMedia(input:{mediaId:string;provider:string;title:string;thumbnailUrl?:string;sourceUrl?:string;sourceType?:string;watchSeconds?:number}):Promise<MediaLibraryItem>{return firstValueFrom(this.http.post<MediaLibraryItem>(`${this.baseUrl}/me/media/history`,input,{headers:await this.headers()}));}
   async removeMediaHistory(mediaId:string):Promise<void>{await firstValueFrom(this.http.delete<void>(`${this.baseUrl}/me/media/history`,{params:{mediaId},headers:await this.headers()}));}
   async setMediaLike(mediaId:string,enabled:boolean):Promise<void>{await firstValueFrom(this.http.put<void>(`${this.baseUrl}/me/media/like`,{mediaId,enabled},{headers:await this.headers()}));}
 

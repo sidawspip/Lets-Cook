@@ -51,18 +51,19 @@ public class SecurityConfig {
             @org.springframework.beans.factory.annotation.Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         var allowedIssuers = java.util.Set.of(
-                "http://localhost:8180/realms/lets-cook",
+                "http://localhost:8180/realms/xynk",
                 // Android Emulator routes the development host through this
                 // fixed alias, so Keycloak-issued mobile tokens use it as iss.
-                "http://10.0.2.2:8180/realms/lets-cook",
-                "http://192.168.0.3:8180/realms/lets-cook",
-                "http://192.168.0.5:8180/realms/lets-cook",
-                "http://keycloak:8080/realms/lets-cook",
-                "https://letscook.world/realms/lets-cook",
-                "https://www.letscook.world/realms/lets-cook");
+                "http://10.0.2.2:8180/realms/xynk",
+                "http://192.168.0.3:8180/realms/xynk",
+                "http://192.168.0.5:8180/realms/xynk",
+                "http://keycloak:8080/realms/xynk",
+                "https://xynk.in/realms/xynk",
+                "https://auth.xynk.in/realms/xynk",
+                "https://www.xynk.in/realms/xynk");
         var acceptedIssuer = new JwtClaimValidator<String>("iss", issuer -> issuer != null && (
                 allowedIssuers.contains(issuer)
-                        || issuer.matches("https://[a-z0-9-]+\\.trycloudflare\\.com/realms/lets-cook")));
+                        || issuer.matches("https://[a-z0-9-]+\\.trycloudflare\\.com/realms/xynk")));
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefault(),
                 acceptedIssuer));
@@ -78,6 +79,8 @@ public class SecurityConfig {
     CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(List.of(
+                "https://xynk.in",
+                "https://www.xynk.in",
                 "http://localhost:4200",
                 "http://192.168.0.3:4200",
                 "http://192.168.0.5:4200"));

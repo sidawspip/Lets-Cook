@@ -1,13 +1,27 @@
-.env
 .idea/
 .vscode/
+**/*.iml
 .env
 **/.env
+**/.env.*
+!**/.env.example
+**/build-config.psd1
 .cloudflared/
 **/node_modules/
 **/dist/
 **/target/
+**/coverage/
+**/.angular/
+**/.dart_tool/
 *.log
+*.hprof
+*.heapdump
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
 .DS_Store
 
 # Flutter / Android build output
@@ -22,11 +36,48 @@ mobile/android/local.properties
 .runtime/
 .tmp/
 .tools/
+.oci-cli-local/
+.oci-sdk-local/
 tmp/
 artifacts/
+# Local notes and extraction helpers for third-party app research.
+/docs/RAVE_*.md
+/docs/CRUNCHYROLL_WIDEVINE_INTEGRATION.md
+/scripts/RecoverRaveProviders.java
+/scripts/build_rave_provider_indexes.py
 MCP Repo Backups/
 youtube-demo-room.txt
 youtube-test-room.txt
+oracle-retry/
+
+# Python package installs and test caches
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+**/.venv/
+**/venv/
+
+# Windows Flutter and other generated builds
+windows_app/.dart_tool/
+windows_app/.flutter-plugins
+windows_app/.flutter-plugins-dependencies
+windows_app/build/
+windows_app/windows/flutter/ephemeral/
+windows_app/drm_companion/.cache/
+windows_app/drm_companion/.tmp/
+windows_app/drm_companion/node_modules/
+**/.gradle/
+**/build/
+
+# Local UI test captures. App assets stay in their source directories.
+/*.png
+/*.xml
+/mobile/*.png
+/mobile/*.xml
+
+# Local assistant settings and workspace state.
+/.claude/
+.kilo/
 
 # Framework build caches
 frontend/.angular/cache/

@@ -41,11 +41,16 @@ public class WatchRepository {
                     if (playing && Instant.now().isAfter(start)) {
                         position += Math.max(0, (Instant.now().toEpochMilli() - start.toEpochMilli()) / 1000d) * rate;
                     }
+                    Double duration = (Double) rs.getObject("duration_seconds");
+                    if (duration != null && duration > 0 && position >= duration) {
+                        position = duration;
+                        playing = false;
+                    }
                     return new WatchState(
                             roomId, rs.getString("provider"), rs.getString("source_type"),
                             rs.getString("media_id"), rs.getString("source_url"),
                             rs.getString("thumbnail_url"), rs.getString("title"), playing, position,
-                            (Double) rs.getObject("duration_seconds"), rate, rs.getLong("revision"),
+                            duration, rate, rs.getLong("revision"),
                             updatedAt, Instant.now(), transition);
                 })
                 .optional();

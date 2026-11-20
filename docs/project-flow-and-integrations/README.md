@@ -32,9 +32,9 @@ The browser loads Angular through Nginx. Nginx routes API requests to Spring Boo
 
 | Area | Current setup | Main references |
 |---|---|---|
-| Domain and edge | `letscook.world` and `www` use Cloudflare DNS and a named Tunnel to local frontend port 4200. Local tunnel config and credentials are machine-local. | `.cloudflared/config.yml` (ignored/local), `frontend/nginx.conf`, `scripts/start-cloudflare-uat.ps1` |
+| Domain and edge | `xynk.in` and `www` use Cloudflare DNS and a named Tunnel to local frontend port 4200. Local tunnel config and credentials are machine-local. | `.cloudflared/config.yml` (ignored/local), `frontend/nginx.conf`, `infra/scripts/dev/start-cloudflare-uat.ps1` |
 | Authentication | Keycloak realm `lets-cook`; Angular uses OIDC client `lets-cook-web`; Spring Boot validates JWTs and issuer values. | `infra/keycloak/realm-export.json`, `frontend/src/app/core/auth.service.ts`, `backend/src/main/java/com/letscook/platform/config/SecurityConfig.java` |
-| Media | Bundled LiveKit on port 7880 for local/LAN. Optional public LiveKit Cloud endpoint can be configured for remote media. | `compose.yaml`, `infra/livekit/livekit.yaml`, `scripts/configure-livekit-cloud.ps1` |
+| Media | Bundled LiveKit on port 7880 for local/LAN. Optional public LiveKit Cloud endpoint can be configured for remote media. | `compose.yaml`, `infra/livekit/livekit.yaml`, `backend/scripts/prod/configure-livekit-cloud.ps1` |
 | Redis | Redis 7.4 container with AOF persistence and a named Docker volume. LiveKit is configured to connect; backend has the Spring Data Redis dependency and connection settings, but no feature code currently uses Redis commands. | `compose.yaml`, `infra/livekit/livekit.yaml`, `infra/livekit/livekit-public.yaml`, `backend/pom.xml`, `backend/src/main/resources/application.yml` |
 
 ## Suggested setup sequence

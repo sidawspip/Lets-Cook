@@ -93,15 +93,25 @@ public class MediaLibraryRepository {
             String thumbnailUrl,
             String sourceUrl,
             boolean sensitive,
-            long watchSeconds) {
+            long watchSeconds,
+            String sourceType) {
         jdbc.sql("""
                         INSERT INTO user_media_history(
-                          user_id,media_id,provider,title,thumbnail_url,source_url,sensitive,watch_seconds)
-                        VALUES(:user,:media,:provider,:title,:thumbnail,:source,:sensitive,:seconds)
+                          user_id,media_id,provider,title,thumbnail_url,source_url,sensitive,watch_seconds,source_type)
+                        VALUES(:user,:media,:provider,:title,:thumbnail,:source,:sensitive,:seconds,:sourceType)
                         ON CONFLICT(user_id,media_id) DO UPDATE SET
                           provider=EXCLUDED.provider,title=EXCLUDED.title,
                           thumbnail_url=COALESCE(EXCLUDED.thumbnail_url,user_media_history.thumbnail_url),
-                          source_url=COALESCE(EXCLUDED.source_url,user_media_history.source_url),
+                          source_url=CASE
+                            WHEN user_media_history.source_type IN ('DIRECT_MP4','DIRECT_HLS')
+                              AND (EXCLUDED.source_type IS NULL OR EXCLUDED.source_type='WEB')
+                            THEN user_media_history.source_url
+                            ELSE COALESCE(EXCLUDED.source_url,user_media_history.source_url) END,
+                          source_type=CASE
+                            WHEN user_media_history.source_type IN ('DIRECT_MP4','DIRECT_HLS')
+                              AND (EXCLUDED.source_type IS NULL OR EXCLUDED.source_type='WEB')
+                            THEN user_media_history.source_type
+                            ELSE COALESCE(EXCLUDED.source_type,user_media_history.source_type) END,
                           sensitive=EXCLUDED.sensitive,
                           history_visible=true,
                           play_count=user_media_history.play_count+1,
@@ -116,6 +126,7 @@ public class MediaLibraryRepository {
                 .param("source", sourceUrl)
                 .param("sensitive", sensitive)
                 .param("seconds", watchSeconds)
+                .param("sourceType", sourceType)
                 .update();
     }
 
@@ -131,7 +142,8 @@ public class MediaLibraryRepository {
                           first_watched_at=LEAST(canonical.first_watched_at,alias.first_watched_at),
                           last_watched_at=GREATEST(canonical.last_watched_at,alias.last_watched_at),
                           thumbnail_url=COALESCE(canonical.thumbnail_url,alias.thumbnail_url),
-                          source_url=COALESCE(canonical.source_url,alias.source_url)
+                          source_url=COALESCE(canonical.source_url,alias.source_url),
+                          source_type=COALESCE(canonical.source_type,alias.source_type)
                         FROM user_media_history alias
                         WHERE canonical.user_id=:user AND canonical.media_id=:canonical
                           AND alias.user_id=:user AND alias.media_id=:alias
@@ -219,6 +231,7 @@ public class MediaLibraryRepository {
                 rs.getLong("watch_seconds"),
                 rs.getBoolean("liked"),
                 rs.getBoolean("in_gallery"),
-                rs.getTimestamp("last_watched_at").toInstant());
+                rs.getTimestamp("last_watched_at").toInstant(),
+                rs.getString("source_type"));
     }
 }

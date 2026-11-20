@@ -3,17 +3,17 @@ class AppConfig {
 
   static const apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://letscook.world/api',
+    defaultValue: 'https://xynk.in/api',
   );
   static const authBaseUrl = String.fromEnvironment(
     'AUTH_BASE_URL',
-    defaultValue: 'https://letscook.world',
+    defaultValue: 'https://xynk.in',
   );
   static const appBaseUrl = String.fromEnvironment(
     'APP_BASE_URL',
-    defaultValue: 'https://letscook.world',
+    defaultValue: 'https://xynk.in',
   );
-  static const realm = 'lets-cook';
+  static const realm = 'xynk';
   static const clientId = 'lets-cook-mobile';
   static const registrationClientId = 'lets-cook-web';
   static const oauthRedirectUrl = 'world.letscook.app:/oauthredirect';

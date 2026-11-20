@@ -1,6 +1,7 @@
 package com.letscook.platform.room;
 
 import com.letscook.platform.common.CurrentUser;
+import com.letscook.platform.common.PublicIdentity;
 import com.letscook.platform.room.RoomDtos.AccessResult;
 import com.letscook.platform.room.RoomDtos.CreateInviteRequest;
 import com.letscook.platform.room.RoomDtos.CreateRoomRequest;
@@ -32,6 +33,9 @@ import io.livekit.server.CanPublishSources;
 import io.livekit.server.CanSubscribe;
 import io.livekit.server.RoomJoin;
 import io.livekit.server.RoomName;
+import io.livekit.server.RoomServiceClient;
+import livekit.LivekitModels.ParticipantPermission;
+import livekit.LivekitModels.TrackSource;
 import com.letscook.platform.room.RoomDtos.MediaToken;
 
 /**
@@ -68,7 +72,8 @@ class RoomRepository {
     public List<RoomSummary> listFor(CurrentUser user) {
         deleteExpiredParties();
         return jdbc.sql("""
-                        SELECT r.id, r.name, r.description, r.access_policy, rm.role, r.locked, r.visibility, r.screen_share_policy,
+                        SELECT r.id, r.name, owner.display_name owner_display_name, owner.username owner_username,
+                               r.owner_id, r.description, r.access_policy, rm.role, r.locked, r.visibility, r.screen_share_policy,
                                (SELECT count(*) FROM room_members x WHERE x.room_id = r.id AND x.status = 'ACTIVE') AS member_count,
                                (SELECT count(*) FROM room_members x WHERE x.room_id = r.id AND x.status = 'PENDING') AS pending_count,
                                (SELECT count(*) FROM room_live_presence p WHERE p.room_id=r.id AND p.last_seen_at>now()-interval '45 seconds') viewer_count,
@@ -78,6 +83,7 @@ class RoomRepository {
                                 WHERE q.room_id=r.id AND q.provider=w.provider AND q.media_id=w.media_id
                                 ORDER BY q.created_at DESC LIMIT 1) thumbnail_url
                         FROM rooms r
+                        JOIN app_users owner ON owner.id = r.owner_id
                         JOIN room_members rm ON rm.room_id = r.id
                         LEFT JOIN room_watch_state w ON w.room_id=r.id
                         WHERE rm.user_id = :userId AND rm.status = 'ACTIVE'
@@ -88,6 +94,7 @@ class RoomRepository {
                 .query((rs, rowNum) -> new RoomSummary(
                         rs.getObject("id", UUID.class),
                         rs.getString("name"),
+                        PublicIdentity.displayName(rs.getString("owner_display_name"), rs.getString("owner_username"), rs.getObject("owner_id", UUID.class)),
                         rs.getString("description"),
                         AccessPolicy.valueOf(rs.getString("access_policy")),
                         RoomRole.valueOf(rs.getString("role")),
@@ -132,7 +139,8 @@ class RoomRepository {
                 .param("userId", owner.id())
                 .update();
 
-        RoomSummary room = new RoomSummary(roomId, request.name().trim(), request.description(),
+        RoomSummary room = new RoomSummary(roomId, request.name().trim(),
+                PublicIdentity.displayName(owner.displayName(), owner.username(), owner.id()), request.description(),
                 request.accessPolicy(), RoomRole.HOST, false, 1, 0, validVisibility(request.visibility()), "HOSTS_ONLY",
                 0,null,null,null,null,0,null);
         return new RoomCreated(room, accessKey);
@@ -164,7 +172,7 @@ class RoomRepository {
     public void decideJoinRequest(CurrentUser actor, UUID roomId, UUID userId, boolean approve) {
         requireRoomManager(actor, roomId);
         int changed = approve
-                ? jdbc.sql("UPDATE room_members SET status = 'ACTIVE' WHERE room_id = :roomId AND user_id = :userId AND status = 'PENDING'")
+                ? jdbc.sql("UPDATE room_members SET status = 'ACTIVE', can_view_video = true, video_access_requested = false WHERE room_id = :roomId AND user_id = :userId AND status = 'PENDING'")
                     .param("roomId", roomId).param("userId", userId).update()
                 : jdbc.sql("DELETE FROM room_members WHERE room_id = :roomId AND user_id = :userId AND status = 'PENDING'")
                     .param("roomId", roomId).param("userId", userId).update();
@@ -191,16 +199,67 @@ class RoomRepository {
     @Transactional
     public void setScreenPermission(CurrentUser actor, UUID roomId, UUID userId, boolean allowed) {
         requireRoomOwner(actor, roomId);
-        int changed = jdbc.sql("UPDATE room_members SET can_share_screen=:allowed WHERE room_id=:roomId AND user_id=:userId AND role <> 'HOST'")
+        int changed = jdbc.sql("UPDATE room_members SET can_share_screen=:allowed, screen_share_requested=false WHERE room_id=:roomId AND user_id=:userId AND status='ACTIVE' AND role <> 'HOST'")
                 .param("allowed",allowed).param("roomId",roomId).param("userId",userId).update();
         if(changed==0) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Member not found or is the owner");
+        updateLiveScreenPermission(roomId,userId,allowed);
+        String targetSubject=jdbc.sql("SELECT identity_subject FROM app_users WHERE id=:u")
+                .param("u",userId).query(String.class).optional().orElse("");
+        if(!targetSubject.isBlank())events.convertAndSendToUser(targetSubject,"/queue/notifications",
+                new PushEvent(allowed?"SCREEN_SHARE_APPROVED":"SCREEN_SHARE_REVOKED",actor.id(),actor.displayName(),
+                        allowed?"You can now share your screen in this room.":"Your screen sharing access was removed.",roomId));
+    }
+
+    private void updateLiveScreenPermission(UUID roomId,UUID userId,boolean allowed) {
+        try {
+            String httpUrl=liveKitUrl.replaceFirst("^wss:","https:").replaceFirst("^ws:","http:");
+            var permissions=ParticipantPermission.newBuilder().setCanSubscribe(true).setCanPublish(true).setCanPublishData(true)
+                    .addCanPublishSources(TrackSource.MICROPHONE);
+            if(allowed)permissions.addCanPublishSources(TrackSource.SCREEN_SHARE).addCanPublishSources(TrackSource.SCREEN_SHARE_AUDIO);
+            var response=RoomServiceClient.create(httpUrl,liveKitApiKey,liveKitApiSecret)
+                    .updateParticipant("room-"+roomId,userId.toString(),null,null,permissions.build()).execute();
+            if(!response.isSuccessful() && response.code()!=404)log.warn("LiveKit permission update failed: roomId={}, userId={}, status={}",roomId,userId,response.code());
+        } catch(Exception exception) {
+            log.warn("LiveKit permission update deferred to client reconnect: roomId={}, userId={}",roomId,userId,exception);
+        }
+    }
+
+    @Transactional
+    public void requestScreenShare(CurrentUser actor, UUID roomId) {
+        int changed=jdbc.sql("UPDATE room_members SET screen_share_requested=true WHERE room_id=:r AND user_id=:u AND status='ACTIVE' AND role<>'HOST' AND can_share_screen=false")
+                .param("r",roomId).param("u",actor.id()).update();
+        if(changed==0)throw new ResponseStatusException(HttpStatus.CONFLICT,"Screen sharing is already allowed or membership is inactive");
+        String hostSubject=jdbc.sql("SELECT u.identity_subject FROM rooms r JOIN app_users u ON u.id=r.owner_id WHERE r.id=:r")
+                .param("r",roomId).query(String.class).optional().orElse("");
+        if(!hostSubject.isBlank())events.convertAndSendToUser(hostSubject,"/queue/notifications",
+                new PushEvent("SCREEN_SHARE_REQUEST",actor.id(),actor.displayName(),
+                        actor.displayName()+" wants to share a screen.",roomId));
+    }
+
+    public void hostMicAction(CurrentUser actor, UUID roomId, UUID userId, String action) {
+        requireRoomOwner(actor, roomId);
+        if(actor.id().equals(userId))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Choose another member");
+        if(!List.of("MUTE","REQUEST_UNMUTE").contains(action))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Invalid microphone action");
+        String targetSubject=jdbc.sql("SELECT u.identity_subject FROM room_members rm JOIN app_users u ON u.id=rm.user_id WHERE rm.room_id=:r AND rm.user_id=:u AND rm.status='ACTIVE'")
+                .param("r",roomId).param("u",userId).query(String.class).optional()
+                .orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Active member not found"));
+        events.convertAndSendToUser(targetSubject,"/queue/notifications",
+                new PushEvent("MUTE".equals(action)?"HOST_MUTE":"HOST_UNMUTE_REQUEST",actor.id(),actor.displayName(),
+                        "MUTE".equals(action)?"The host muted your microphone.":"The host asked you to turn on your microphone.",roomId));
     }
 
     @Transactional
     public void kickMember(CurrentUser actor, UUID roomId, UUID userId) {
-        requireRoomOwner(actor, roomId);
+        requireRoomManager(actor, roomId);
         if (actor.id().equals(userId)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The room owner cannot be kicked");
+        }
+        boolean isHost=jdbc.sql("SELECT owner_id=:u FROM rooms WHERE id=:r")
+                .param("u",actor.id()).param("r",roomId).query(Boolean.class).single();
+        if(!isHost) {
+            String targetRole=jdbc.sql("SELECT role FROM room_members WHERE room_id=:r AND user_id=:u")
+                    .param("r",roomId).param("u",userId).query(String.class).optional().orElse("");
+            if(!"MEMBER".equals(targetRole))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Co-hosts can manage members only");
         }
         jdbc.sql("DELETE FROM room_live_presence WHERE room_id=:roomId AND user_id=:userId")
                 .param("roomId", roomId).param("userId", userId).update();
@@ -251,9 +310,9 @@ class RoomRepository {
         if("TRANSFER".equals(action)) {
             if("HOST".equals(targetRole))return;
             int cohosts=jdbc.sql("SELECT count(*) FROM room_members WHERE room_id=:r AND role='CO_HOST' AND status='ACTIVE'").param("r",roomId).query(Integer.class).single();
-            jdbc.sql("UPDATE room_members SET role=:role,can_share_screen=true,can_add_videos=true WHERE room_id=:r AND user_id=:u")
+            jdbc.sql("UPDATE room_members SET role=:role,can_share_screen=false,screen_share_requested=false,can_add_videos=false WHERE room_id=:r AND user_id=:u")
                     .param("role",cohosts>=3?"MEMBER":"CO_HOST").param("r",roomId).param("u",actor.id()).update();
-            jdbc.sql("UPDATE room_members SET role='HOST',can_share_screen=true,can_add_videos=true WHERE room_id=:r AND user_id=:u")
+            jdbc.sql("UPDATE room_members SET role='HOST',can_share_screen=true,can_add_videos=true,can_view_video=true,video_access_requested=false WHERE room_id=:r AND user_id=:u")
                     .param("r",roomId).param("u",userId).update();
             jdbc.sql("UPDATE rooms SET owner_id=:u,updated_at=now() WHERE id=:r").param("u",userId).param("r",roomId).update();
             return;
@@ -261,7 +320,7 @@ class RoomRepository {
         if("CO_HOST".equals(action)) {
             int count=jdbc.sql("SELECT count(*) FROM room_members WHERE room_id=:r AND role='CO_HOST' AND status='ACTIVE'").param("r",roomId).query(Integer.class).single();
             if(count>=3&&!"CO_HOST".equals(targetRole))throw new ResponseStatusException(HttpStatus.CONFLICT,"A room can have at most 3 co-hosts");
-            jdbc.sql("UPDATE room_members SET role='CO_HOST',can_share_screen=true,can_add_videos=true WHERE room_id=:r AND user_id=:u AND role<>'HOST'")
+            jdbc.sql("UPDATE room_members SET role='CO_HOST',can_share_screen=false,can_add_videos=false WHERE room_id=:r AND user_id=:u AND role<>'HOST'")
                     .param("r",roomId).param("u",userId).update();return;
         }
         if("MEMBER".equals(action)) {
@@ -274,15 +333,18 @@ class RoomRepository {
     public List<RoomDtos.PublicRoom> publicLive(CurrentUser user) {
         deleteExpiredParties();
         return jdbc.sql("""
-                SELECT r.id,r.name,r.description,r.access_policy,
+                SELECT r.id,r.name,owner.display_name owner_display_name,owner.username owner_username,
+                  r.owner_id,r.description,r.access_policy,
                   (SELECT count(*) FROM room_live_presence p WHERE p.room_id=r.id AND p.last_seen_at>now()-interval '45 seconds') viewers,
                   w.title,w.media_id,w.provider media_provider,
                   COALESCE(w.position_seconds,0) position_seconds,w.duration_seconds,
                   (SELECT q.thumbnail_url FROM room_watch_queue q
                    WHERE q.room_id=r.id AND q.provider=w.provider AND q.media_id=w.media_id
                    ORDER BY q.created_at DESC LIMIT 1) thumbnail_url,
-                  EXISTS(SELECT 1 FROM room_members m WHERE m.room_id=r.id AND m.user_id=:u AND m.status='ACTIVE') joined
-                FROM rooms r LEFT JOIN room_watch_state w ON w.room_id=r.id
+                  EXISTS(SELECT 1 FROM room_members m WHERE m.room_id=r.id AND m.user_id=:u AND m.status='ACTIVE') joined,
+                  COALESCE((SELECT m.role FROM room_members m WHERE m.room_id=r.id AND m.user_id=:u AND m.status='ACTIVE'), 'MEMBER') role
+                FROM rooms r JOIN app_users owner ON owner.id=r.owner_id
+                LEFT JOIN room_watch_state w ON w.room_id=r.id
                 WHERE EXISTS(SELECT 1 FROM room_live_presence p WHERE p.room_id=r.id AND p.last_seen_at>now()-interval '45 seconds')
                   AND NOT EXISTS(SELECT 1 FROM room_members ban WHERE ban.room_id=r.id AND ban.user_id=:u AND ban.status='BANNED')
                   AND (r.visibility='PUBLIC' OR (r.visibility='FRIENDS' AND EXISTS(SELECT 1 FROM friendships f WHERE f.status='ACCEPTED' AND ((f.requester_id=:u AND f.addressee_id=r.owner_id) OR (f.addressee_id=:u AND f.requester_id=r.owner_id)))) OR EXISTS(SELECT 1 FROM room_members mine WHERE mine.room_id=r.id AND mine.user_id=:u AND mine.status='ACTIVE'))
@@ -291,7 +353,9 @@ class RoomRepository {
                     UUID id=rs.getObject("id",UUID.class);
                     List<String> avatars=jdbc.sql("SELECT u.avatar_url FROM room_live_presence p JOIN app_users u ON u.id=p.user_id WHERE p.room_id=:r AND p.last_seen_at>now()-interval '45 seconds' AND u.avatar_url IS NOT NULL ORDER BY p.joined_at LIMIT 5")
                             .param("r",id).query(String.class).list();
-                    return new RoomDtos.PublicRoom(id,rs.getString("name"),rs.getString("description"),AccessPolicy.valueOf(rs.getString("access_policy")),rs.getInt("viewers"),rs.getString("title"),rs.getString("media_id"),rs.getString("media_provider"),rs.getString("thumbnail_url"),rs.getDouble("position_seconds"),(Double)rs.getObject("duration_seconds"),avatars,rs.getBoolean("joined"));
+                    return new RoomDtos.PublicRoom(id,rs.getString("name"),
+                            PublicIdentity.displayName(rs.getString("owner_display_name"),rs.getString("owner_username"),rs.getObject("owner_id",UUID.class)),
+                            rs.getString("description"),AccessPolicy.valueOf(rs.getString("access_policy")),rs.getInt("viewers"),rs.getString("title"),rs.getString("media_id"),rs.getString("media_provider"),rs.getString("thumbnail_url"),rs.getDouble("position_seconds"),(Double)rs.getObject("duration_seconds"),avatars,rs.getBoolean("joined"),RoomRole.valueOf(rs.getString("role")));
                 }).list();
     }
 
@@ -491,8 +555,7 @@ class RoomRepository {
         RoomRole role = shareAccess.role();
         // An explicit per-member grant from the room owner always permits that
         // member to publish, including while the room default is HOSTS_ONLY.
-        boolean canPublish = role == RoomRole.HOST || role == RoomRole.CO_HOST
-                || shareAccess.policy().equals("EVERYONE") || shareAccess.allowed();
+        boolean canPublish = role == RoomRole.HOST || shareAccess.allowed();
         String mediaRoomName = "room-" + roomId;
 
         AccessToken token = new AccessToken(liveKitApiKey, liveKitApiSecret);

@@ -1,12 +1,12 @@
-# Let's Cook for Windows
+# Xynk Windows app
 
-This is the separate Windows desktop client for Let's Cook. It is intentionally
+This is the separate Windows desktop client for Xynk. It is intentionally
 kept outside `mobile/`, while starting from the same tested Dart models, API
 client, room state, theme, and screens.
 
 ## Current status
 
-- Uses `https://letscook.world` for the API, authentication, and app links.
+- Uses `https://xynk.in` for the API, authentication, and app links.
 - Local username/password sign-in and the shared social/room/profile code are
   present.
 - Windows-safe fallbacks prevent Android notification and PiP method channels
@@ -21,13 +21,15 @@ client, room state, theme, and screens.
 ## Build
 
 ```powershell
-flutter pub get
-flutter test
-flutter build windows
+.\windows_app\scripts\prod\build.ps1
 ```
 
+From the repository root, `./windows_app/scripts/dev/run.ps1` launches the Windows Flutter app against its configured production URLs. Use `./windows_app/scripts/dev/run.ps1 -Local` to connect to the local Compose stack. Extra Flutter arguments are forwarded.
+
+`build.ps1` defaults to Release. Copy `windows_app/build-config.example.psd1` to ignored `windows_app/build-config.psd1` for machine-specific API, auth, and app URLs, or pass `-ApiBaseUrl`, `-AuthBaseUrl`, and `-AppBaseUrl`. Use `-Configuration Debug -Local` for local HTTP endpoints. `-DryRun` prints the command. The EXE needs the other files in its output directory.
+
 The executable will be produced under
-`build/windows/x64/runner/Release/LetsCook.exe` for a release build.
+`build/windows/x64/runner/Release/Xynk.exe` for a release build.
 
 ## Desktop work remaining
 

@@ -68,6 +68,7 @@ public final class WatchModels {
     public record QueueAdd(
             @NotBlank String provider,
             @NotBlank @Size(max = 2000) String mediaId,
+            @Size(max = 2000) String sourceUrl,
             @NotBlank @Size(max = 500) String title,
             @Size(max = 1000) String thumbnailUrl,
             Boolean personalQueueItem) {}

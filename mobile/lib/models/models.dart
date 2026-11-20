@@ -28,6 +28,7 @@ class PartyRoom {
     required this.id,
     required this.name,
     required this.viewerCount,
+    this.ownerName,
     this.description,
     this.mediaTitle,
     this.mediaId,
@@ -44,6 +45,7 @@ class PartyRoom {
   final String id;
   final String name;
   final int viewerCount;
+  final String? ownerName;
   final String? description;
   final String? mediaTitle;
   final String? mediaId;
@@ -59,12 +61,14 @@ class PartyRoom {
   PartyRoom copyWith({
     String? name,
     String? description,
+    String? role,
     String? accessPolicy,
     String? visibility,
   }) => PartyRoom(
     id: id,
     name: name ?? this.name,
     viewerCount: viewerCount,
+    ownerName: ownerName,
     description: description ?? this.description,
     mediaTitle: mediaTitle,
     mediaId: mediaId,
@@ -73,7 +77,7 @@ class PartyRoom {
     positionSeconds: positionSeconds,
     durationSeconds: durationSeconds,
     joined: joined,
-    role: role,
+    role: role ?? this.role,
     accessPolicy: accessPolicy ?? this.accessPolicy,
     visibility: visibility ?? this.visibility,
   );
@@ -82,6 +86,7 @@ class PartyRoom {
     id: json['id'] as String,
     name: json['name'] as String,
     viewerCount: (json['viewerCount'] ?? json['memberCount'] ?? 0) as int,
+    ownerName: json['ownerName'] as String?,
     description: json['description'] as String?,
     mediaTitle: json['mediaTitle'] as String?,
     mediaId: json['mediaId'] as String?,
@@ -130,21 +135,26 @@ class RoomWatchState {
   final DateTime? serverTime;
 
   RoomWatchState copyWith({
+    String? provider,
+    String? sourceType,
+    String? sourceUrl,
+    String? thumbnailUrl,
     String? mediaId,
     String? title,
     bool? playing,
     double? positionSeconds,
+    double? durationSeconds,
   }) => RoomWatchState(
     roomId: roomId,
-    provider: provider,
-    sourceType: sourceType,
-    sourceUrl: sourceUrl,
-    thumbnailUrl: thumbnailUrl,
+    provider: provider ?? this.provider,
+    sourceType: sourceType ?? this.sourceType,
+    sourceUrl: sourceUrl ?? this.sourceUrl,
+    thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
     mediaId: mediaId ?? this.mediaId,
     title: title ?? this.title,
     playing: playing ?? this.playing,
     positionSeconds: positionSeconds ?? this.positionSeconds,
-    durationSeconds: durationSeconds,
+    durationSeconds: durationSeconds ?? this.durationSeconds,
     playbackRate: playbackRate,
     revision: revision,
     updatedAt: updatedAt,
@@ -174,6 +184,7 @@ class QueueItem {
     required this.id,
     this.provider = 'YOUTUBE',
     required this.mediaId,
+    this.sourceUrl,
     required this.title,
     required this.addedBy,
     required this.addedByName,
@@ -188,6 +199,7 @@ class QueueItem {
   final String id;
   final String provider;
   final String mediaId;
+  final String? sourceUrl;
   final String title;
   final String addedBy;
   final String addedByName;
@@ -202,6 +214,7 @@ class QueueItem {
     id: json['id'] as String,
     provider: (json['provider'] ?? 'YOUTUBE') as String,
     mediaId: json['mediaId'] as String,
+    sourceUrl: json['sourceUrl'] as String?,
     title: json['title'] as String,
     addedBy: (json['addedBy'] ?? '').toString(),
     addedByName: (json['addedByName'] ?? 'Member') as String,
@@ -242,6 +255,8 @@ class VideoSuggestion {
     required this.channelTitle,
     required this.thumbnailUrl,
     this.provider = 'YOUTUBE',
+    this.sourceUrl,
+    this.sourceType,
   });
 
   final String videoId;
@@ -249,6 +264,8 @@ class VideoSuggestion {
   final String channelTitle;
   final String thumbnailUrl;
   final String provider;
+  final String? sourceUrl;
+  final String? sourceType;
 
   factory VideoSuggestion.fromJson(Map<String, dynamic> json) =>
       VideoSuggestion(
@@ -257,6 +274,8 @@ class VideoSuggestion {
         channelTitle: (json['channelTitle'] ?? 'YouTube') as String,
         thumbnailUrl: (json['thumbnailUrl'] ?? '') as String,
         provider: (json['provider'] ?? 'YOUTUBE') as String,
+        sourceUrl: json['sourceUrl'] as String?,
+        sourceType: json['sourceType'] as String?,
       );
 }
 
@@ -269,6 +288,7 @@ class MediaResource {
   const MediaResource({
     required this.provider,
     required this.mediaId,
+    this.sourceUrl,
     required this.title,
     this.thumbnailUrl,
     this.channelTitle,
@@ -277,6 +297,10 @@ class MediaResource {
 
   final String provider;
   final String mediaId;
+
+  /// The currently resolved stream. For scraped Web media [mediaId] remains
+  /// the durable page URL while this value may be refreshed when it expires.
+  final String? sourceUrl;
   final String title;
   final String? thumbnailUrl;
   final String? channelTitle;
@@ -300,6 +324,8 @@ class MediaResource {
     channelTitle: channelTitle ?? this.channelTitle ?? provider,
     thumbnailUrl: thumbnailUrl ?? '',
     provider: provider,
+    sourceUrl: sourceUrl,
+    sourceType: isDirect ? normalizedProvider : null,
   );
 }
 

@@ -36,6 +36,27 @@ class MediaDiscoveryScreen extends StatefulWidget {
 }
 
 class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
+  void _selectProvider(_DesktopProvider provider) {
+    final nextProvider = provider.label == 'Google Search'
+        ? 'web'
+        : provider.label;
+    if (widget.initialProvider?.toLowerCase() == nextProvider.toLowerCase()) {
+      _navigate(provider.url);
+      return;
+    }
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => MediaDiscoveryScreen(
+          controller: widget.controller,
+          targetRoomId: widget.targetRoomId,
+          initialProvider: nextProvider,
+          initialSourceUrl: provider.url,
+          viewerLoginMode: widget.viewerLoginMode,
+        ),
+      ),
+    );
+  }
+
   static const _providers = <_DesktopProvider>[
     _DesktopProvider(
       'YouTube',
@@ -76,11 +97,6 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       'https://www.google.com/',
     ),
     _DesktopProvider(
-      'DuckDuckGo',
-      Icons.privacy_tip_rounded,
-      'https://duckduckgo.com/',
-    ),
-    _DesktopProvider(
       'Nextcloud',
       Icons.cloud_sync_rounded,
       'https://nextcloud.com/sign-up/',
@@ -113,7 +129,9 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   bool committing = false;
   bool canGoBack = false;
   bool canGoForward = false;
+  bool recoveringBrowser = false;
   _DetectedPageVideo? detectedPageVideo;
+  _CapturedPageMedia? _capturedPageMedia;
   int _pageDetectionGeneration = 0;
   String? _autoQueuedUrl;
 
@@ -132,18 +150,30 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           message: 'Microsoft Edge WebView2 Runtime is not installed.',
         );
       }
+      // Use the same persistent WebView2 profile for every provider, including
+      // sites reached through Google Search, so login cookies survive restart.
       await browser.initialize();
+      // Provider login cookies remain in the app's existing profile. Avoid
+      // stale cached pages and signed media responses during discovery.
+      await browser.setCacheDisabled(true);
       await browser.setBackgroundColor(const Color(0xFF080A12));
       await browser.setPopupWindowPolicy(WebviewPopupWindowPolicy.deny);
+      await browser.addScriptToExecuteOnDocumentCreated(_mediaDetectorScript);
       subscriptions
         ..add(
           browser.url.listen((value) {
             if (!mounted) return;
-            final detectionGeneration = ++_pageDetectionGeneration;
+            // WebView2 may emit the same URL more than once while a provider
+            // SPA finishes loading. A duplicate must not cancel the pending
+            // video selection for that URL.
+            if (currentUrl != value) ++_pageDetectionGeneration;
             setState(() {
               currentUrl = value;
               address.text = value;
               detectedPageVideo = null;
+              if (_capturedPageMedia?.pageUrl != value) {
+                _capturedPageMedia = null;
+              }
             });
             final uri = Uri.tryParse(value);
             if (uri != null && uri.host.isNotEmpty) {
@@ -151,10 +181,11 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               // React to the URL itself so a YouTube/provider card click is
               // selected immediately instead of requiring Add to room.
               unawaited(_autoQueuePlayablePage(uri));
-              unawaited(_watchForPagePlayer(detectionGeneration));
             }
           }),
         )
+        ..add(browser.webMessage.listen(_handleWebMessage))
+        ..add(browser.onLoadError.listen(_handleBrowserLoadError))
         ..add(
           browser.title.listen((value) {
             if (mounted) setState(() => pageTitle = value);
@@ -163,13 +194,15 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         ..add(
           browser.loadingState.listen((value) {
             if (mounted) {
-              setState(() => loading = value == LoadingState.loading);
+              setState(() {
+                loading = value == LoadingState.loading;
+                if (loading) browserError = null;
+              });
             }
-            if (value != LoadingState.loading) {
+            if (value != LoadingState.loading && browserError == null) {
               final uri = Uri.tryParse(currentUrl);
               if (uri != null && uri.host.isNotEmpty) {
                 unawaited(_autoQueuePlayablePage(uri));
-                unawaited(_watchForPagePlayer(_pageDetectionGeneration));
               }
             }
           }),
@@ -190,9 +223,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       if (!mounted) return;
       setState(() {
         browserReady = true;
-        browserError = null;
       });
-      unawaited(_watchForPagePlayer(_pageDetectionGeneration));
     } on PlatformException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -207,6 +238,69 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         loading = false;
         browserError = 'The Windows browser could not start: $error';
       });
+    }
+  }
+
+  void _handleBrowserLoadError(WebErrorStatus error) {
+    if (!mounted || error == WebErrorStatus.WebErrorStatusOperationCanceled) {
+      return;
+    }
+    final host = Uri.tryParse(currentUrl)?.host ?? 'This website';
+    final message = switch (error) {
+      WebErrorStatus.WebErrorStatusConnectionReset =>
+        '$host reset the connection. Retry, or clear cached files and retry.',
+      WebErrorStatus.WebErrorStatusHostNameNotResolved =>
+        'The address for $host could not be found. Check the website address and your connection.',
+      WebErrorStatus.WebErrorStatusDisconnected =>
+        'The connection is offline. Reconnect and retry.',
+      WebErrorStatus.WebErrorStatusTimeout =>
+        '$host took too long to respond. Retry the page.',
+      WebErrorStatus.WebErrorStatusValidProxyAuthenticationRequired =>
+        'Your network proxy requires sign-in before this page can load.',
+      WebErrorStatus.WebErrorStatusCertificateCommonNameIsIncorrect ||
+      WebErrorStatus.WebErrorStatusCertificateExpired ||
+      WebErrorStatus.WebErrorStatusClientCertificateContainsErrors ||
+      WebErrorStatus.WebErrorStatusCertificateRevoked ||
+      WebErrorStatus.WebErrorStatusCertificateIsInvalid =>
+        'The secure connection to $host could not be verified. Check your device date or try again later.',
+      _ => '$host could not load. Retry the page or check your connection.',
+    };
+    setState(() {
+      browserError = message;
+      loading = false;
+      detectedPageVideo = null;
+      _capturedPageMedia = null;
+      _pageDetectionGeneration++;
+    });
+  }
+
+  Future<void> _retryBrowser({bool clearCache = false}) async {
+    if (!browserReady || recoveringBrowser) return;
+    setState(() {
+      recoveringBrowser = true;
+      browserError = null;
+      detectedPageVideo = null;
+      _capturedPageMedia = null;
+      _pageDetectionGeneration++;
+    });
+    final generation = _pageDetectionGeneration;
+    final retryUrl = currentUrl;
+    try {
+      if (clearCache) await browser.clearCache();
+      if (!mounted ||
+          generation != _pageDetectionGeneration ||
+          retryUrl != currentUrl) {
+        return;
+      }
+      await browser.reload();
+    } catch (_) {
+      if (mounted &&
+          generation == _pageDetectionGeneration &&
+          retryUrl == currentUrl) {
+        setState(() => browserError = 'The page could not restart. Try again.');
+      }
+    } finally {
+      if (mounted) setState(() => recoveringBrowser = false);
     }
   }
 
@@ -246,6 +340,14 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
 
   Future<void> _addCurrentPage() async {
     if (committing) return;
+    final generation = _pageDetectionGeneration;
+    bool selectionIsCurrent() {
+      if (!mounted) return false;
+      if (generation == _pageDetectionGeneration) return true;
+      setState(() => committing = false);
+      return false;
+    }
+
     final uri = Uri.tryParse(currentUrl);
     if (uri == null || uri.scheme != 'https') {
       _message('Open a secure video or provider page first.');
@@ -262,6 +364,32 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     }
     final youtubeId = _youtubeVideoId(uri);
     if (youtubeId != null) {
+      // WebView2 publishes /watch before YouTube replaces its generic title.
+      // Read the selected document after it settles so the room, history, and
+      // chat card all receive the actual video name.
+      for (var attempt = 0; attempt < 12; attempt++) {
+        if (!selectionIsCurrent() || currentUrl != uri.toString()) return;
+        try {
+          final documentTitle = (await browser.executeScript(
+            'document.title',
+          ))?.toString().trim();
+          if (documentTitle != null &&
+              documentTitle.isNotEmpty &&
+              documentTitle.toLowerCase() != 'youtube') {
+            title = documentTitle.replaceFirst(RegExp(r'\s+-\s+YouTube$'), '');
+            break;
+          }
+        } catch (_) {
+          // The page may still be navigating; use its title stream below.
+        }
+        final streamedTitle = pageTitle.trim();
+        if (streamedTitle.isNotEmpty &&
+            streamedTitle.toLowerCase() != 'youtube') {
+          title = streamedTitle.replaceFirst(RegExp(r'\s+-\s+YouTube$'), '');
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
       await widget.controller.selectYoutubeVideo(
         VideoSuggestion(
           videoId: youtubeId,
@@ -280,6 +408,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           normalized,
           sourceType: 'DIRECT_MP4',
         );
+        if (!selectionIsCurrent()) return;
         if (!playable) {
           _rejectUnresolvedPage(
             'This shared file did not expose a public playable video. Make the '
@@ -297,7 +426,9 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         final sourceType = uri.path.toLowerCase().endsWith('.m3u8')
             ? 'DIRECT_HLS'
             : 'DIRECT_MP4';
-        if (!await probeDirectMedia(uri, sourceType: sourceType)) {
+        final playable = await probeDirectMedia(uri, sourceType: sourceType);
+        if (!selectionIsCurrent()) return;
+        if (!playable) {
           _rejectUnresolvedPage(
             'That address did not return a playable video stream.',
           );
@@ -311,12 +442,39 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         );
       } else {
         final captured = await _capturePlayableMedia();
+        if (!selectionIsCurrent()) return;
         if (captured != null) {
-          final capturedUri = Uri.parse(captured.url);
-          if (!await probeDirectMedia(
-            capturedUri,
-            sourceType: captured.sourceType,
-          )) {
+          final pageUri = Uri.tryParse(captured.pageUrl);
+          Uri? capturedUri;
+          String? capturedSourceType;
+          final candidates = <_CapturedMediaCandidate>[
+            _CapturedMediaCandidate(captured.url, captured.sourceType),
+            ...captured.candidates,
+          ];
+          final tested = <String>{};
+          for (final candidate in candidates) {
+            if (!tested.add(candidate.url)) continue;
+            final parsed = Uri.tryParse(candidate.url);
+            if (parsed == null ||
+                parsed.scheme != 'https' ||
+                !_isAllowedCapturedMedia(pageUri, parsed)) {
+              continue;
+            }
+            final resolved = resolveDirectMediaTemplate(parsed);
+            if (hasUnresolvedMediaTemplate(resolved)) continue;
+            final playable = await probeDirectMedia(
+              resolved,
+              sourceType: candidate.sourceType,
+              sourcePage: pageUri,
+            );
+            if (!selectionIsCurrent()) return;
+            if (playable) {
+              capturedUri = resolved;
+              capturedSourceType = candidate.sourceType;
+              break;
+            }
+          }
+          if (capturedUri == null || capturedSourceType == null) {
             _rejectUnresolvedPage(
               'This site exposed a temporary or protected stream that the '
               'room player cannot use yet.',
@@ -326,11 +484,12 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           title = captured.title.isEmpty ? title : captured.title;
           final providerLabel = _providerLabel(uri);
           await widget.controller.selectDirectVideo(
-            captured.url,
+            capturedUri.toString(),
             targetRoomId: widget.targetRoomId,
-            sourceType: captured.sourceType,
+            sourceType: capturedSourceType,
             title: '$title · $providerLabel',
             thumbnailUrl: captured.poster,
+            sourcePageUrl: captured.pageUrl,
           );
         } else {
           _rejectUnresolvedPage(
@@ -342,6 +501,9 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         }
       }
     }
+    // A provider may update its URL while the room API calls are in flight.
+    // Once the selected resource has been submitted, that navigation must not
+    // keep the user in the provider browser instead of opening the room.
     if (!mounted) return;
     if (widget.controller.error == null) {
       Navigator.pop(context);
@@ -381,14 +543,11 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       return;
     }
     final publicLink = _publicMediaLink(uri);
-    final dedicatedProviderSelection =
-        (publicLink != null && _isPublicSharePage(uri, publicLink)) ||
-        _looksLikeProviderMedia(uri);
-    if (dedicatedProviderSelection) {
+    if (publicLink != null && _isPublicSharePage(uri, publicLink)) {
       _autoQueuedUrl = uri.toString();
-      // Provider SPAs publish their detail URL before the video element and
-      // metadata exist. Let the page expose its real MP4/HLS stream so the
-      // room can use our custom player rather than embedding the whole page.
+      // A public cloud share is already an explicit media selection. Ordinary
+      // provider detail URLs must wait for a trusted player interaction and a
+      // concrete MP4/HLS capture, matching the generic Web flow on Android.
       await Future<void>.delayed(const Duration(milliseconds: 650));
       if (!mounted || currentUrl != uri.toString()) {
         _autoQueuedUrl = null;
@@ -409,137 +568,34 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     }
   }
 
-  Future<void> _watchForPagePlayer(int generation) async {
-    if (!browserReady || widget.viewerLoginMode) return;
-    final uri = Uri.tryParse(currentUrl);
-    if (uri == null ||
-        uri.scheme != 'https' ||
-        _isDrmProviderPage(uri) ||
-        _youtubeVideoId(uri) != null) {
-      return;
-    }
-    for (var attempt = 0; attempt < 8; attempt++) {
-      if (!mounted || generation != _pageDetectionGeneration) return;
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      try {
-        final result = await browser.executeScript(r'''
-          (() => {
-            const candidates = Array.from(document.querySelectorAll(
-              'video, [data-player], [class*="video-player"], [class*="player-container"], iframe[src*="/embed/"]'
-            ));
-            const player = candidates.find(element => {
-              const box = element.getBoundingClientRect();
-              const style = getComputedStyle(element);
-              const text = `${element.id || ''} ${element.className || ''}`.toLowerCase();
-              return box.width >= 160 && box.height >= 90
-                && style.display !== 'none' && style.visibility !== 'hidden'
-                && !/(^|[-_ ])ad(s|vert|vertisement)?([-_ ]|$)/.test(text);
-            });
-            const video = player?.tagName === 'VIDEO'
-              ? player
-              : player?.querySelector?.('video');
-            let poster = video?.poster
-              || document.querySelector('meta[property="og:image"]')?.content
-              || document.querySelector('meta[name="twitter:image"]')?.content
-              || '';
-            try { if (poster) poster = new URL(poster, location.href).href; } catch (_) {}
-            const title = document.querySelector('meta[property="og:title"]')?.content
-              || document.querySelector('meta[name="twitter:title"]')?.content
-              || document.title
-              || 'Video found on this page';
-            return JSON.stringify({found: Boolean(player), poster, title});
-          })()
-        ''');
-        dynamic decoded = jsonDecode(result.toString());
-        if (decoded is String) decoded = jsonDecode(decoded);
-        if (decoded is Map<String, dynamic> &&
-            decoded['found'] == true &&
-            mounted &&
-            generation == _pageDetectionGeneration) {
-          final poster = (decoded['poster'] ?? '').toString().trim();
-          final posterUri = Uri.tryParse(poster);
-          setState(
-            () => detectedPageVideo = _DetectedPageVideo(
-              title: (decoded['title'] ?? 'Video found on this page')
-                  .toString()
-                  .trim(),
-              thumbnailUrl:
-                  posterUri?.scheme == 'https' &&
-                      posterUri?.host.isNotEmpty == true
-                  ? poster
-                  : null,
-            ),
-          );
-          return;
-        }
-      } catch (_) {
-        // Some sites temporarily block script access while navigating.
-      }
-    }
-  }
-
   Future<_CapturedPageMedia?> _capturePlayableMedia() async {
     if (!browserReady) return null;
+    final generation = _pageDetectionGeneration;
+    final capturePageUrl = currentUrl;
+    final remembered = _capturedPageMedia;
+    if (remembered != null && remembered.pageUrl == currentUrl) {
+      return remembered;
+    }
+    if (detectedPageVideo == null) return null;
     for (var attempt = 0; attempt < 8; attempt++) {
-      try {
-        final raw = await browser.executeScript(r'''
-          (() => {
-            const videos = Array.from(document.querySelectorAll('video'));
-            const video = videos.find(v => v.offsetWidth >= 160 && v.offsetHeight >= 90) || videos[0];
-            const resources = performance.getEntriesByType('resource')
-              .map(entry => entry.name)
-              .reverse();
-            const candidates = [
-              video?.currentSrc,
-              video?.src,
-              ...Array.from(video?.querySelectorAll('source') || []).map(source => source.src),
-              ...resources.filter(url => /(?:\.m3u8|\.mp4)(?:[?#]|$)/i.test(url)),
-            ].filter(Boolean);
-            const url = candidates.find(value => /^https:\/\//i.test(value) && /(?:\.m3u8|\.mp4)(?:[?#]|$)/i.test(value));
-            const title = document.querySelector('meta[property="og:title"]')?.content
-              || document.querySelector('meta[name="twitter:title"]')?.content
-              || document.title
-              || '';
-            const poster = video?.poster
-              || document.querySelector('meta[property="og:image"]')?.content
-              || '';
-            return JSON.stringify({url: url || '', title, poster});
-          })();
-        ''');
-        final decoded = jsonDecode(raw.toString());
-        if (decoded is Map<String, dynamic>) {
-          final value = (decoded['url'] ?? '').toString().trim();
-          final mediaUri = Uri.tryParse(value);
-          if (mediaUri != null &&
-              mediaUri.scheme == 'https' &&
-              mediaUri.host.isNotEmpty) {
-            final lower = value.toLowerCase();
-            final poster = (decoded['poster'] ?? '').toString().trim();
-            return _CapturedPageMedia(
-              url: value,
-              sourceType: lower.contains('.m3u8') ? 'DIRECT_HLS' : 'DIRECT_MP4',
-              title: (decoded['title'] ?? '').toString().trim(),
-              poster: poster.isEmpty ? null : poster,
-            );
-          }
-        }
-      } catch (_) {
-        // Cross-origin provider frames can temporarily hide their player.
-        // Keep polling until the top page exposes a media resource.
-      }
       await Future<void>.delayed(const Duration(milliseconds: 350));
-      if (!mounted) return null;
+      if (!mounted || generation != _pageDetectionGeneration) return null;
+      final captured = _capturedPageMedia;
+      if (captured != null && captured.pageUrl == capturePageUrl) {
+        return captured;
+      }
     }
 
     // The page may hide its stream behind player configuration that is not
     // visible to the desktop WebView. Ask the shared scraper to normalize the
     // page into the same direct-media resource used by the room controller.
-    final pageUri = Uri.tryParse(currentUrl);
+    final pageUri = Uri.tryParse(capturePageUrl);
     if (pageUri == null || pageUri.scheme != 'https') return null;
     try {
       final resolved = await widget.controller.api.resolveWebMedia(
         pageUri.toString(),
       );
+      if (!mounted || generation != _pageDetectionGeneration) return null;
       final value = (resolved['sourceUrl'] ?? '').toString().trim();
       final sourceType = (resolved['sourceType'] ?? '')
           .toString()
@@ -548,11 +604,15 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       if (mediaUri == null ||
           mediaUri.scheme != 'https' ||
           mediaUri.host.isEmpty ||
+          !_isAllowedCapturedMedia(pageUri, mediaUri) ||
           !const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(sourceType)) {
         return null;
       }
       final resolvedTitle = (resolved['title'] ?? '').toString().trim();
       final siteName = (resolved['siteName'] ?? '').toString().trim();
+      final posterUri = Uri.tryParse(
+        (resolved['thumbnailUrl'] ?? '').toString(),
+      );
       return _CapturedPageMedia(
         url: value,
         sourceType: sourceType,
@@ -561,13 +621,304 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             : siteName.isEmpty
             ? resolvedTitle
             : '$resolvedTitle · $siteName',
-        poster: detectedPageVideo?.thumbnailUrl,
+        poster:
+            detectedPageVideo?.thumbnailUrl ??
+            (posterUri?.scheme == 'https' && posterUri!.host.isNotEmpty
+                ? posterUri.toString()
+                : null),
+        pageUrl: pageUri.toString(),
+        candidates: (resolved['sources'] as List? ?? const [])
+            .whereType<Map>()
+            .map(
+              (source) => _CapturedMediaCandidate(
+                (source['url'] ?? '').toString(),
+                (source['sourceType'] ?? '').toString().toUpperCase(),
+              ),
+            )
+            .where((candidate) {
+              final uri = Uri.tryParse(candidate.url);
+              return uri != null &&
+                  _isAllowedCapturedMedia(pageUri, uri) &&
+                  const {
+                    'DIRECT_MP4',
+                    'DIRECT_HLS',
+                  }.contains(candidate.sourceType);
+            })
+            .toList(),
       );
     } catch (_) {
       // Unsupported, authenticated, or DRM-bound pages remain unselectable.
     }
     return null;
   }
+
+  void _handleWebMessage(dynamic raw) {
+    if (!mounted) return;
+    try {
+      dynamic decoded = raw;
+      if (decoded is String) decoded = jsonDecode(decoded);
+      if (decoded is! Map) return;
+      final map = Map<String, dynamic>.from(decoded);
+      if (map['pageUrl'] != currentUrl ||
+          widget.viewerLoginMode ||
+          browserError != null) {
+        return;
+      }
+      final pageUri = Uri.tryParse(currentUrl);
+      if (pageUri == null ||
+          pageUri.scheme != 'https' ||
+          pageUri.host.isEmpty ||
+          _isDrmProviderPage(pageUri) ||
+          _youtubeVideoId(pageUri) != null) {
+        return;
+      }
+      if (map['kind'] == 'lets-cook-player-selected') {
+        _capturedPageMedia = null;
+        final poster = Uri.tryParse((map['poster'] ?? '').toString());
+        setState(
+          () => detectedPageVideo = _DetectedPageVideo(
+            title: (map['title'] ?? pageTitle).toString(),
+            thumbnailUrl: poster?.scheme == 'https' && poster!.host.isNotEmpty
+                ? poster.toString()
+                : null,
+          ),
+        );
+        return;
+      }
+      if (map['kind'] != 'lets-cook-media') return;
+      final value = (map['url'] ?? '').toString().trim();
+      final pageUrl = (map['pageUrl'] ?? currentUrl).toString().trim();
+      final mediaUri = Uri.tryParse(value);
+      if (mediaUri == null ||
+          mediaUri.scheme != 'https' ||
+          mediaUri.host.isEmpty ||
+          pageUrl != currentUrl ||
+          !_isAllowedCapturedMedia(Uri.tryParse(pageUrl), mediaUri)) {
+        return;
+      }
+      final lower = '${map['type'] ?? ''} $value'.toLowerCase();
+      var poster = (map['poster'] ?? '').toString().trim();
+      final page = Uri.tryParse(pageUrl);
+      final posterUri = Uri.tryParse(poster);
+      if (poster.isNotEmpty && page != null && posterUri?.hasScheme != true) {
+        poster = page.resolve(poster).toString();
+      }
+      final captured = _CapturedPageMedia(
+        url: value,
+        sourceType: lower.contains('mpegurl') || lower.contains('.m3u8')
+            ? 'DIRECT_HLS'
+            : 'DIRECT_MP4',
+        title: (map['title'] ?? pageTitle).toString().trim(),
+        poster: poster.isEmpty ? null : poster,
+        pageUrl: pageUrl,
+        candidates: (map['candidates'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((item) {
+              final candidate = Map<String, dynamic>.from(item);
+              final url = (candidate['url'] ?? '').toString().trim();
+              final type = '${candidate['type'] ?? ''} $url'.toLowerCase();
+              return _CapturedMediaCandidate(
+                url,
+                type.contains('mpegurl') || type.contains('.m3u8')
+                    ? 'DIRECT_HLS'
+                    : 'DIRECT_MP4',
+              );
+            })
+            .where((item) {
+              final uri = Uri.tryParse(item.url);
+              return uri != null && _isAllowedCapturedMedia(page, uri);
+            })
+            .take(8)
+            .toList(),
+      );
+      setState(() {
+        _capturedPageMedia = captured;
+        detectedPageVideo = _DetectedPageVideo(
+          title: captured.title,
+          thumbnailUrl: captured.poster,
+        );
+      });
+    } catch (_) {
+      // Ignore unrelated provider messages and malformed page data.
+    }
+  }
+
+  static const String _mediaDetectorScript = r'''
+    (() => {
+      if (window.__letsCookWindowsMediaDetector) return;
+      window.__letsCookWindowsMediaDetector = true;
+      const candidates = [];
+      let selectedVideo = null;
+      const deliver = (payload) => {
+        if (window === window.top) {
+          window.chrome?.webview?.postMessage(JSON.stringify({...payload, pageUrl: location.href}));
+        } else {
+          window.parent.postMessage({letsCookFrameSelection: payload}, '*');
+        }
+      };
+      window.addEventListener('message', event => {
+        const payload = event.data?.letsCookFrameSelection;
+        if (!payload || !['lets-cook-player-selected','lets-cook-media'].includes(payload.kind)) return;
+        const frame = Array.from(document.querySelectorAll('iframe')).find(f => f.contentWindow === event.source);
+        if (!frame || frame !== document.activeElement || isSearchResultsPage()) return;
+        deliver(payload);
+      });
+      const selectedPlayers = new WeakMap();
+      const isAd = (url) => /doubleclick|googlesyndication|adservice|flirtify\.com|\/vast\/|preroll|video-ad/i.test(String(url || ''));
+      const isMedia = (url) => {
+        const value = String(url || '');
+        return /^https:\/\//i.test(value) &&
+          (/(?:\.m3u8|\.mp4)(?:[?#]|$)/i.test(value) ||
+           /(?:[?&](?:mime|type)=video|format=m3u8)/i.test(value)) &&
+          !/\.m4s(?:[?#]|$)|\.ts(?:[?#]|$)|preview/i.test(value) && !isAd(value);
+      };
+      const remember = (url, type = '', priority = 0) => {
+        if (!isMedia(url)) return;
+        const value = String(url);
+        const existing = candidates.findIndex((item) => item.url === value);
+        if (existing >= 0) candidates.splice(existing, 1);
+        candidates.push({url: value, type: String(type || ''), priority});
+        if (candidates.length > 80) candidates.shift();
+      };
+      const score = (item) => {
+        const value = `${item.type} ${item.url}`.toLowerCase();
+        return item.priority * 1000000 +
+          (value.includes('avc1') || value.includes('h264') ? 300000 : 0) +
+          (value.includes('.m3u8') || value.includes('mpegurl') ? 100000 : 0) -
+          (value.includes('av1') || value.includes('hevc') ? 300000 : 0);
+      };
+      const isAllowedContentCandidate = (url) => {
+        try {
+          const pageHost = location.hostname.toLowerCase();
+          const mediaHost = new URL(String(url), location.href).hostname.toLowerCase();
+          if (pageHost.includes('xhamster')) {
+            return mediaHost === 'xhamster.com' ||
+              mediaHost.endsWith('.xhamster.com') ||
+              mediaHost === 'xhcdn.com' || mediaHost.endsWith('.xhcdn.com') ||
+              mediaHost === 'xhpingcdn.com' || mediaHost.endsWith('.xhpingcdn.com') ||
+              mediaHost === 'xhmediacdn.com' || mediaHost.endsWith('.xhmediacdn.com');
+          }
+          return true;
+        } catch (_) {
+          return false;
+        }
+      };
+      const ranked = () => candidates
+        .filter((item) => !/_tpl_|\{quality\}|%7bquality%7d/i.test(item.url) &&
+          isAllowedContentCandidate(item.url))
+        .sort((a, b) => score(b) - score(a));
+      const isSearchResultsPage = () => {
+        const host = location.hostname.toLowerCase();
+        return host === 'google.com' || host.startsWith('www.google.') ||
+          host.includes('.google.');
+      };
+      const selectPlayer = event => {
+        if (!event.isTrusted || isSearchResultsPage() || !(event.target instanceof Element)) return;
+        const container = event.target.closest('video,[data-player],[class*="video-player"],[class*="player-container"],.video-js,.jwplayer,.plyr');
+        const video = (container?.matches('video') ? container : container?.querySelector('video')) ||
+          (event.type === 'pointerdown' && Array.from(document.querySelectorAll('video')).find(v => {
+            const r = v.getBoundingClientRect();
+            return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+          }));
+        if (!video) return;
+        const rect = video.getBoundingClientRect();
+        if (rect.width < 160 || rect.height < 90) return;
+        if (selectedVideo !== video || selectedPlayers.get(video) !== location.href) candidates.length = 0;
+        selectedVideo = video;
+        selectedPlayers.set(video, location.href);
+        deliver({kind:'lets-cook-player-selected', title: document.title, poster: video.poster || document.querySelector('meta[property="og:image"]')?.content || ''});
+        [0, 250, 1000, 3000].forEach(delay => setTimeout(() => report(video), delay));
+      };
+      document.addEventListener('pointerdown', selectPlayer, true);
+      document.addEventListener('keydown', event => {
+        if (['Enter', ' ', 'k'].includes(event.key)) selectPlayer(event);
+      }, true);
+      const rememberPageSources = () => {
+        selectedVideo.querySelectorAll('source[src]').forEach((node) =>
+          remember(node.currentSrc || node.src, node.type || '', 220));
+        // Match the Android provider adapter: many sites keep the real CDN
+        // rendition table in inline player JSON while the <video> element is
+        // a blob URL or a download/consent endpoint.
+        document.querySelectorAll('script').forEach((script) => {
+          const value = script.textContent || '';
+          if (value.length > 2000000) return;
+          const mediaPattern = /https:\/\/[^"'\s<>{}]+?(?:\.m3u8|\.mp4)(?:\?[^"'\s<>{}]*)?/gi;
+          for (const match of value.matchAll(mediaPattern)) {
+            const url = match[0]
+              .replaceAll('\\u002F', '/')
+              .replaceAll('\\/', '/')
+              .replaceAll('&amp;', '&');
+            remember(url, '', 40);
+          }
+          const contentPattern = /video_(?:alt_)?url[0-9]*[ \t]*[:=][ \t]*['"](https:[/][/][^'"]+)['"]/gi;
+          for (const match of value.matchAll(contentPattern)) {
+            const url = match[1]
+              .replaceAll('\\u002F', '/')
+              .replaceAll('\\/', '/')
+              .replaceAll('&amp;', '&');
+            remember(url, '', 180);
+          }
+        });
+      };
+      try {
+        new PerformanceObserver((list) => {
+          if (selectedVideo && selectedPlayers.get(selectedVideo) === location.href) {
+            list.getEntries().forEach((entry) => remember(entry.name));
+          }
+        }).observe({type: 'resource'});
+      } catch (_) {}
+      const originalFetch = window.fetch;
+      if (originalFetch) window.fetch = function(input) {
+        if (selectedVideo && selectedPlayers.get(selectedVideo) === location.href) remember(typeof input === 'string' ? input : input?.url);
+        return originalFetch.apply(this, arguments);
+      };
+      const originalOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        if (selectedVideo && selectedPlayers.get(selectedVideo) === location.href) remember(url);
+        return originalOpen.apply(this, arguments);
+      };
+      const report = (video) => {
+        // Landing-page autoplay and search previews are not selections. Only
+        // capture a stream immediately after the user interacted with the
+        // page/player, as the Android Web adapter does.
+        if (isSearchResultsPage() || selectedVideo !== video || selectedPlayers.get(video) !== location.href) return;
+        rememberPageSources();
+        remember(video.currentSrc || video.src, video.getAttribute('type') || '', 250);
+        video.querySelectorAll('source[src]').forEach((source) => remember(source.src, source.type, 220));
+        const ordered = ranked();
+        const chosen = ordered[0];
+        if (!chosen) return;
+        let poster = video.poster || document.querySelector('meta[property="og:image"]')?.content || '';
+        try { if (poster) poster = new URL(poster, location.href).href; } catch (_) {}
+        deliver({
+          kind: 'lets-cook-media',
+          url: chosen.url,
+          type: chosen.type,
+          title: document.querySelector('meta[property="og:title"]')?.content || document.title || '',
+          poster,
+          pageUrl: location.href,
+          candidates: ordered.slice(0, 8).map((item) => ({
+            url: item.url,
+            type: item.type || ''
+          }))
+        });
+      };
+      const bind = (video) => {
+        if (video.dataset.letsCookWindowsBound) return;
+        video.dataset.letsCookWindowsBound = 'true';
+        const capture = () => {
+          report(video);
+          [120, 350, 800, 1600, 3000].forEach((delay) => setTimeout(() => report(video), delay));
+        };
+        video.addEventListener('play', capture, true);
+        video.addEventListener('playing', capture, true);
+        video.addEventListener('progress', () => report(video), true);
+      };
+      const bindAll = () => document.querySelectorAll('video').forEach(bind);
+      document.addEventListener('DOMContentLoaded', bindAll, {once: true});
+      new MutationObserver(bindAll).observe(document, {childList: true, subtree: true});
+    })();
+  ''';
 
   static String _providerLabel(Uri uri) {
     final code = _providerFor(uri);
@@ -577,6 +928,31 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       'PRIME_VIDEO' => 'Prime Video',
       _ => code.toLowerCase().replaceAll('_', ' '),
     };
+  }
+
+  static bool _isAllowedCapturedMedia(Uri? page, Uri media) {
+    if (media.scheme != 'https' ||
+        media.host.isEmpty ||
+        media.userInfo.isNotEmpty) {
+      return false;
+    }
+    final value = media.toString().toLowerCase();
+    if (RegExp(
+      r'doubleclick|googlesyndication|adservice|flirtify\.com|/vast/|preroll|video-ad',
+    ).hasMatch(value)) {
+      return false;
+    }
+    final pageHost = page?.host.toLowerCase() ?? '';
+    if (!pageHost.contains('xhamster')) return true;
+    final host = media.host.toLowerCase();
+    return host == 'xhamster.com' ||
+        host.endsWith('.xhamster.com') ||
+        host == 'xhcdn.com' ||
+        host.endsWith('.xhcdn.com') ||
+        host == 'xhpingcdn.com' ||
+        host.endsWith('.xhpingcdn.com') ||
+        host == 'xhmediacdn.com' ||
+        host.endsWith('.xhmediacdn.com');
   }
 
   static String? _youtubeVideoId(Uri uri) {
@@ -644,25 +1020,6 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     if (host == 'x.com' || host.endsWith('.x.com')) return 'X';
     if (host.contains('archive.org')) return 'INTERNET_ARCHIVE';
     return 'WEB';
-  }
-
-  static bool _looksLikeProviderMedia(Uri uri) {
-    if (uri.scheme != 'https' || uri.host.isEmpty) return false;
-    final host = uri.host.toLowerCase();
-    final path = uri.path.toLowerCase();
-    bool hostIs(String value) => host == value || host.endsWith('.$value');
-    if (hostIs('archive.org')) return path.contains('/details/');
-    if (hostIs('x.com') || hostIs('twitter.com')) {
-      return path.contains('/status/');
-    }
-    if (hostIs('twitch.tv')) {
-      return path.contains('/videos/') ||
-          (path.length > 1 && !path.startsWith('/directory'));
-    }
-    if (hostIs('vimeo.com')) {
-      return RegExp(r'/(?:video/)?\d+').hasMatch(path);
-    }
-    return false;
   }
 
   static bool _isDrmProviderPage(Uri uri) {
@@ -756,7 +1113,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                             );
                             return;
                           }
-                          _navigate(provider.url);
+                          _selectProvider(provider);
                         },
                 ),
               );
@@ -766,7 +1123,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         const Padding(
           padding: EdgeInsets.fromLTRB(18, 10, 18, 18),
           child: Text(
-            'Sign in inside this private Windows browser. Passwords and provider cookies are never sent to a room.',
+            'Provider sign-ins stay in this app’s browser. Web browsing starts in a separate temporary session.',
             style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.35),
           ),
         ),
@@ -792,9 +1149,18 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               tooltip: 'Browser forward',
             ),
             IconButton(
-              onPressed: browserReady ? browser.reload : null,
+              onPressed: browserReady && !recoveringBrowser
+                  ? () => _retryBrowser()
+                  : null,
               icon: const Icon(Icons.refresh_rounded),
               tooltip: 'Reload',
+            ),
+            IconButton(
+              onPressed: browserReady && !recoveringBrowser
+                  ? () => _retryBrowser(clearCache: true)
+                  : null,
+              icon: const Icon(Icons.cleaning_services_outlined),
+              tooltip: 'Clear cached files and reload (keeps sign-ins)',
             ),
             const Spacer(),
             if (widget.viewerLoginMode) ...[
@@ -916,6 +1282,53 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     ],
   );
 
+  Future<void> _openAnotherLink() async {
+    var input = '';
+    String? error;
+    final url = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, refresh) {
+          void open() {
+            final uri = Uri.tryParse(input.trim());
+            if (uri == null ||
+                uri.scheme != 'https' ||
+                uri.host.isEmpty ||
+                uri.userInfo.isNotEmpty) {
+              refresh(
+                () => error = 'Enter an HTTPS link with a website address.',
+              );
+              return;
+            }
+            Navigator.pop(context, uri.toString());
+          }
+
+          return AlertDialog(
+            title: const Text('Open another link'),
+            content: TextField(
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: 'Website link',
+                hintText: 'https://',
+                errorText: error,
+              ),
+              onChanged: (value) => input = value,
+              onSubmitted: (_) => open(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(onPressed: open, child: const Text('Open')),
+            ],
+          );
+        },
+      ),
+    );
+    if (mounted && url != null) await _navigate(url);
+  }
+
   Widget _browserError() => Center(
     child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 520),
@@ -933,11 +1346,39 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                 style: const TextStyle(fontSize: 16, height: 1.4),
               ),
               const SizedBox(height: 12),
-              const Text(
-                'Install the Microsoft Edge WebView2 Runtime, then reopen Let’s Cook.',
+              Text(
+                browserReady
+                    ? 'You can retry without losing your provider sign-ins.'
+                    : 'Check that Microsoft Edge WebView2 Runtime is installed, then reopen Xynk.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white60),
+                style: const TextStyle(color: Colors.white60),
               ),
+              if (browserReady) ...[
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton(
+                      onPressed: recoveringBrowser
+                          ? null
+                          : () => _retryBrowser(),
+                      child: const Text('Retry'),
+                    ),
+                    OutlinedButton(
+                      onPressed: recoveringBrowser
+                          ? null
+                          : () => _retryBrowser(clearCache: true),
+                      child: const Text('Clear cache and retry'),
+                    ),
+                    if (widget.initialProvider?.toLowerCase() == 'web')
+                      TextButton(
+                        onPressed: _openAnotherLink,
+                        child: const Text('Open another link'),
+                      ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -955,12 +1396,23 @@ class _CapturedPageMedia {
     required this.sourceType,
     required this.title,
     this.poster,
+    required this.pageUrl,
+    this.candidates = const [],
   });
 
   final String url;
   final String sourceType;
   final String title;
   final String? poster;
+  final String pageUrl;
+  final List<_CapturedMediaCandidate> candidates;
+}
+
+class _CapturedMediaCandidate {
+  const _CapturedMediaCandidate(this.url, this.sourceType);
+
+  final String url;
+  final String sourceType;
 }
 
 class _DetectedPageVideo {

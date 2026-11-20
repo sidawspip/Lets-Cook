@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xynk connection check</title>
+  <style>body{font:17px system-ui,sans-serif;max-width:38rem;margin:2rem auto;padding:0 1rem;background:#0b0d12;color:#fff}p{line-height:1.5}.ok{color:#78e9ac}.fail{color:#ff9eaa}code{overflow-wrap:anywhere}</style>
+</head>
+<body>
+  <h1>Xynk connection check</h1>
+  <p>If you can read this, your browser received HTML from <code id="host">xynk.in</code>.</p>
+  <p id="script">JavaScript: waiting</p>
+  <p id="app">App page: waiting</p>
+  <p>Take a screenshot of this page if the Xynk home page remains blank.</p>
+  <script>
+    document.getElementById('host').textContent = location.host;
+    document.getElementById('script').textContent = 'JavaScript: working';
+    document.getElementById('script').className = 'ok';
+    fetch('/?connection-check=' + Date.now(), {cache:'no-store'})
+      .then(function(response) {
+        var item = document.getElementById('app');
+        item.textContent = 'App page: HTTP ' + response.status;
+        item.className = response.ok ? 'ok' : 'fail';
+      })
+      .catch(function(error) {
+        var item = document.getElementById('app');
+        item.textContent = 'App page: failed (' + error.name + ')';
+        item.className = 'fail';
+      });
+  </script>
+</body>
+</html>

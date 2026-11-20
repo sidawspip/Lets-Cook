@@ -53,9 +53,9 @@ public class WatchQueueRepository {
 
     public boolean canAdd(UUID roomId, UUID userId) {
         return jdbc.sql("""
-                        SELECT rm.role IN ('HOST','CO_HOST')
+                        SELECT rm.role = 'HOST'
                             OR rooms.watch_queue_mode='VOTE'
-                            OR (rooms.watch_queue_mode='PERMISSION' AND rm.can_add_videos)
+                            OR rm.can_add_videos
                         FROM room_members rm
                         JOIN rooms ON rooms.id=rm.room_id
                         WHERE rm.room_id=:roomId AND rm.user_id=:userId AND rm.status='ACTIVE'
@@ -79,7 +79,7 @@ public class WatchQueueRepository {
 
     public List<QueueItem> queuedItems(UUID roomId, UUID currentUserId) {
         List<QueueItem> items = jdbc.sql("""
-                        SELECT q.id,q.provider,q.media_id,q.title,q.thumbnail_url,q.added_by,
+                        SELECT q.id,q.provider,q.media_id,q.source_url,q.title,q.thumbnail_url,q.added_by,
                                u.display_name,q.personal_position,q.personal_queue_item,q.created_at,
                                COUNT(v.user_id) vote_count,BOOL_OR(v.user_id=:userId) voted
                         FROM room_watch_queue q
@@ -95,6 +95,7 @@ public class WatchQueueRepository {
                         rs.getObject("id", UUID.class),
                         rs.getString("provider"),
                         rs.getString("media_id"),
+                        rs.getString("source_url"),
                         rs.getString("title"),
                         rs.getString("thumbnail_url"),
                         rs.getObject("added_by", UUID.class),
@@ -183,6 +184,7 @@ public class WatchQueueRepository {
             UUID roomId,
             String provider,
             String mediaId,
+            String sourceUrl,
             String title,
             String thumbnailUrl,
             UUID userId,
@@ -190,9 +192,9 @@ public class WatchQueueRepository {
             boolean personalQueueItem) {
         return jdbc.sql("""
                         INSERT INTO room_watch_queue(
-                            id,room_id,provider,media_id,title,thumbnail_url,added_by,
+                            id,room_id,provider,media_id,source_url,title,thumbnail_url,added_by,
                             personal_position,personal_queue_item
-                        ) VALUES(:id,:roomId,:provider,:mediaId,:title,:thumbnail,:userId,
+                        ) VALUES(:id,:roomId,:provider,:mediaId,:sourceUrl,:title,:thumbnail,:userId,
                             :position,:personalQueueItem)
                         ON CONFLICT (room_id,provider,media_id) WHERE status='QUEUED' DO NOTHING
                         """)
@@ -200,6 +202,7 @@ public class WatchQueueRepository {
                 .param("roomId", roomId)
                 .param("provider", provider)
                 .param("mediaId", mediaId)
+                .param("sourceUrl", sourceUrl)
                 .param("title", title)
                 .param("thumbnail", thumbnailUrl)
                 .param("userId", userId)
@@ -308,12 +311,12 @@ public class WatchQueueRepository {
 
     public List<NextVideo> nextCandidates(UUID roomId) {
         return jdbc.sql("""
-                        SELECT q.id,q.provider,q.media_id,q.title,q.added_by,q.created_at,
+                        SELECT q.id,q.provider,q.media_id,q.source_url,q.title,q.added_by,q.created_at,
                                COUNT(v.user_id) votes
                         FROM room_watch_queue q
                         JOIN room_watch_votes v ON v.queue_id=q.id
                         WHERE q.room_id=:roomId AND q.status='QUEUED'
-                        GROUP BY q.id,q.provider,q.media_id,q.title,q.added_by,q.created_at
+                        GROUP BY q.id,q.provider,q.media_id,q.source_url,q.title,q.added_by,q.created_at
                         ORDER BY votes DESC,q.created_at,q.id
                         """)
                 .param("roomId", roomId)
@@ -321,6 +324,7 @@ public class WatchQueueRepository {
                         rs.getObject("id", UUID.class),
                         rs.getString("provider"),
                         rs.getString("media_id"),
+                        rs.getString("source_url"),
                         rs.getString("title"),
                         rs.getObject("added_by", UUID.class),
                         rs.getTimestamp("created_at").toInstant(),

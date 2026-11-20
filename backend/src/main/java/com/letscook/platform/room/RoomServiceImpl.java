@@ -22,6 +22,8 @@ class RoomServiceImpl implements RoomService {
     public void decideJoinRequest(CurrentUser actor,UUID roomId,UUID userId,boolean approve){repository.decideJoinRequest(actor,roomId,userId,approve);}
     public List<RoomDtos.RoomMember> members(CurrentUser actor,UUID roomId){return repository.members(actor,roomId);}
     public void setScreenPermission(CurrentUser actor,UUID roomId,UUID userId,boolean allowed){repository.setScreenPermission(actor,roomId,userId,allowed);}
+    public void requestScreenShare(CurrentUser actor,UUID roomId){repository.requestScreenShare(actor,roomId);}
+    public void hostMicAction(CurrentUser actor,UUID roomId,UUID userId,String action){repository.hostMicAction(actor,roomId,userId,action);}
     public void kickMember(CurrentUser actor,UUID roomId,UUID userId){repository.kickMember(actor,roomId,userId);}
     public void inviteUser(CurrentUser actor,UUID roomId,UUID userId){repository.inviteUser(actor,roomId,userId);}
     public void setLeadership(CurrentUser actor,UUID roomId,UUID userId,String action){repository.setLeadership(actor,roomId,userId,action);}

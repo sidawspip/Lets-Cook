@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.webkit.CookieManager
 import android.util.Rational
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -22,7 +23,12 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    private val channelName = "letscook.world/device"
+    override fun onStop() {
+        CookieManager.getInstance().flush()
+        super.onStop()
+    }
+
+    private val channelName = "xynk.in/device"
     private val notificationChannel = "room_events"
     private var channel: MethodChannel? = null
     private var pendingPayload: Map<String, String>? = null
@@ -32,6 +38,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        CrunchyrollRoomPlayer.register(this, flutterEngine)
         createNotificationChannel()
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { bridge ->
             bridge.setMethodCallHandler { call, result ->
@@ -171,7 +178,7 @@ class MainActivity : FlutterActivity() {
         }
         val pending = PendingIntent.getActivity(this, (type + senderId + roomId).hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, notificationChannel)
-            .setSmallIcon(applicationInfo.icon).setContentTitle(arguments["title"]?.toString() ?: "Let's Cook")
+            .setSmallIcon(applicationInfo.icon).setContentTitle(arguments["title"]?.toString() ?: "Xynk")
             .setContentText(arguments["body"]?.toString() ?: "").setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true).setContentIntent(pending).build()
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify((type + senderId + roomId).hashCode(), notification)

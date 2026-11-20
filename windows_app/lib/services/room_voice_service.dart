@@ -9,6 +9,14 @@ import 'package:livekit_client/livekit_client.dart';
 import '../core/app_config.dart';
 import 'lets_cook_api.dart';
 
+class VoiceMember {
+  const VoiceMember(this.identity, this.name, this.microphoneOn, this.speaking);
+  final String identity;
+  final String name;
+  final bool microphoneOn;
+  final bool speaking;
+}
+
 class RoomVoiceService extends ChangeNotifier {
   RoomVoiceService(this._api);
 
@@ -16,13 +24,103 @@ class RoomVoiceService extends ChangeNotifier {
   Room? _room;
   EventsListener<RoomEvent>? _listener;
   String? _roomId;
+  Set<String> _activeSpeakerIds = const {};
+  final Set<String> _locallyMutedIds = {};
+  bool isListeningTo(String identity) => !_locallyMutedIds.contains(identity);
+  Future<void> toggleListeningTo(String identity) async {
+    final participant = _room?.remoteParticipants.values.where((person) => person.identity == identity).firstOrNull;
+    if (participant == null) return;
+    final mute = !_locallyMutedIds.contains(identity);
+    for (final publication in participant.audioTrackPublications) {
+      if (publication.source == TrackSource.microphone) {
+        if (mute || (Platform.isWindows && !speakerphoneEnabled)) { await publication.unsubscribe(); } else { await publication.subscribe(); }
+      }
+    }
+    if (mute) { _locallyMutedIds.add(identity); } else { _locallyMutedIds.remove(identity); }
+    notifyListeners();
+  }
 
   bool connected = false;
   bool microphoneEnabled = false;
+  bool _microphoneTogglePending = false;
   bool screenShareEnabled = false;
   bool speakerphoneEnabled = true;
   bool busy = false;
   String? error;
+
+  bool get localSpeaking =>
+      _activeSpeakerIds.contains(_room?.localParticipant?.identity) ||
+      _room?.localParticipant?.isSpeaking == true;
+
+  String? get localIdentity => _room?.localParticipant?.identity;
+
+  bool get localMicrophoneActive {
+    final participant = _room?.localParticipant;
+    return microphoneEnabled ||
+        (participant?.audioTrackPublications.any(
+              (publication) =>
+                  publication.source == TrackSource.microphone &&
+                  !publication.muted &&
+                  publication.track != null,
+            ) ??
+            false);
+  }
+
+  RemoteVideoTrack? get remoteScreenTrack {
+    final room = _room;
+    if (!connected || room == null) return null;
+    for (final participant in room.remoteParticipants.values) {
+      for (final publication in participant.videoTrackPublications) {
+        if (publication.source == TrackSource.screenShareVideo &&
+            !publication.muted &&
+            publication.track != null) {
+          return publication.track;
+        }
+      }
+    }
+    return null;
+  }
+
+  VideoTrack? get screenTrack {
+    final room = _room;
+    if (!connected || room == null) return null;
+    for (final publication
+        in room.localParticipant?.videoTrackPublications ?? []) {
+      if (publication.source == TrackSource.screenShareVideo &&
+          !publication.muted &&
+          publication.track != null) {
+        return publication.track;
+      }
+    }
+    return remoteScreenTrack;
+  }
+
+  List<VoiceMember> get members {
+    final room = _room;
+    if (room == null) return const [];
+    final local = room.localParticipant;
+    return [
+      if (local != null)
+        VoiceMember(
+          local.identity,
+          local.name.isNotEmpty ? local.name : 'You',
+          localMicrophoneActive,
+          localSpeaking,
+        ),
+      for (final participant in room.remoteParticipants.values)
+        VoiceMember(
+          participant.identity,
+          participant.name.isNotEmpty ? participant.name : participant.identity,
+          participant.audioTrackPublications.any(
+            (publication) =>
+                publication.source == TrackSource.microphone &&
+                !publication.muted,
+          ),
+          _activeSpeakerIds.contains(participant.identity) ||
+              participant.isSpeaking,
+        ),
+    ];
+  }
 
   Future<void> connect(String roomId) async {
     if (connected && _roomId == roomId) return;
@@ -42,6 +140,51 @@ class RoomVoiceService extends ChangeNotifier {
           microphoneEnabled = false;
           screenShareEnabled = false;
           notifyListeners();
+        })
+        ..on<RoomReconnectedEvent>((_) => notifyListeners())
+        ..on<ParticipantConnectedEvent>((_) => notifyListeners())
+        ..on<ParticipantDisconnectedEvent>((_) => notifyListeners())
+        ..on<TrackPublishedEvent>((_) => notifyListeners())
+        ..on<TrackUnpublishedEvent>((_) => notifyListeners())
+        ..on<TrackSubscribedEvent>((event) {
+          if (Platform.isWindows && !speakerphoneEnabled &&
+              event.publication.source == TrackSource.microphone) {
+            unawaited(event.publication.unsubscribe());
+          }
+          notifyListeners();
+        })
+        ..on<TrackUnsubscribedEvent>((_) => notifyListeners())
+        ..on<TrackMutedEvent>((event) {
+          if (event.participant is LocalParticipant &&
+              event.publication.source == TrackSource.microphone) {
+            microphoneEnabled = false;
+          }
+          notifyListeners();
+        })
+        ..on<TrackUnmutedEvent>((event) {
+          if (event.participant is LocalParticipant &&
+              event.publication.source == TrackSource.microphone) {
+            microphoneEnabled = true;
+          }
+          notifyListeners();
+        })
+        ..on<LocalTrackPublishedEvent>((event) {
+          if (event.publication.source == TrackSource.microphone) {
+            microphoneEnabled = true;
+          }
+          notifyListeners();
+        })
+        ..on<LocalTrackUnpublishedEvent>((event) {
+          if (event.publication.source == TrackSource.microphone) {
+            microphoneEnabled = false;
+          }
+          notifyListeners();
+        })
+        ..on<ActiveSpeakersChangedEvent>((event) {
+          _activeSpeakerIds = event.speakers
+              .map((participant) => participant.identity)
+              .toSet();
+          notifyListeners();
         });
       await room.connect(_publicMediaUrl(credentials.url), credentials.token);
       debugPrint('RoomVoice: connected to ${credentials.roomName}');
@@ -49,7 +192,15 @@ class RoomVoiceService extends ChangeNotifier {
       _listener = listener;
       _roomId = roomId;
       connected = true;
-      await Hardware.instance.setSpeakerphoneOn(speakerphoneEnabled);
+      try {
+        if (!Platform.isWindows) {
+          await Hardware.instance
+              .setSpeakerphoneOn(speakerphoneEnabled)
+              .timeout(const Duration(seconds: 2));
+        }
+      } catch (exception) {
+        debugPrint('RoomVoice: speaker route setup skipped: $exception');
+      }
     } catch (exception) {
       debugPrint('RoomVoice: connection failed: $exception');
       error = _friendlyError(exception);
@@ -62,23 +213,46 @@ class RoomVoiceService extends ChangeNotifier {
   }
 
   Future<void> toggleMicrophone(String roomId) async {
+    if (_microphoneTogglePending) return;
     if (!connected || _roomId != roomId) await connect(roomId);
     final participant = _room?.localParticipant;
     if (participant == null) {
       throw const ApiException('Voice room is not connected.');
     }
+    _microphoneTogglePending = true;
     busy = true;
     error = null;
+    final previous = microphoneEnabled;
+    final enabled = !previous;
+    microphoneEnabled = enabled;
     notifyListeners();
     try {
-      final enabled = !microphoneEnabled;
-      await participant.setMicrophoneEnabled(enabled);
-      microphoneEnabled = enabled;
+      await participant
+          .setMicrophoneEnabled(enabled)
+          .timeout(const Duration(seconds: 12));
     } catch (exception) {
+      microphoneEnabled = previous;
       error = _friendlyError(exception);
       rethrow;
     } finally {
+      _microphoneTogglePending = false;
       busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> muteMicrophone(String roomId) async {
+    if (microphoneEnabled) await toggleMicrophone(roomId);
+  }
+
+  Future<void> refreshPermissions(String roomId) async {
+    if (!connected || _roomId != roomId) return;
+    final restoreMicrophone = microphoneEnabled;
+    await disconnect();
+    await connect(roomId);
+    if (restoreMicrophone) {
+      await _room!.localParticipant!.setMicrophoneEnabled(true);
+      microphoneEnabled = true;
       notifyListeners();
     }
   }
@@ -89,8 +263,22 @@ class RoomVoiceService extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      speakerphoneEnabled = !speakerphoneEnabled;
-      await Hardware.instance.setSpeakerphoneOn(speakerphoneEnabled);
+      final enabled = !speakerphoneEnabled;
+      if (Platform.isWindows) {
+        for (final person in _room?.remoteParticipants.values ?? <RemoteParticipant>[]) {
+          for (final publication in person.audioTrackPublications) {
+            if (publication.source != TrackSource.microphone) continue;
+            if (enabled && !_locallyMutedIds.contains(person.identity)) {
+              await publication.subscribe();
+            } else {
+              await publication.unsubscribe();
+            }
+          }
+        }
+      } else {
+        await Hardware.instance.setSpeakerphoneOn(enabled);
+      }
+      speakerphoneEnabled = enabled;
     } catch (exception) {
       error = _friendlyError(exception);
       rethrow;
@@ -125,7 +313,7 @@ class RoomVoiceService extends ChangeNotifier {
         var backgroundAllowed = await FlutterBackground.hasPermissions;
         if (!backgroundAllowed) {
           const androidConfig = FlutterBackgroundAndroidConfig(
-            notificationTitle: "Let's Cook screen sharing",
+            notificationTitle: "Xynk screen sharing",
             notificationText: 'Your room can see your screen.',
             notificationImportance: AndroidNotificationImportance.normal,
             notificationIcon: AndroidResource(
@@ -146,10 +334,23 @@ class RoomVoiceService extends ChangeNotifier {
           await FlutterBackground.enableBackgroundExecution();
         }
       }
-      await participant.setScreenShareEnabled(
-        true,
-        captureScreenAudio: true,
-      );
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        final sources = await desktopCapturer.getSources(
+          types: [SourceType.Screen],
+        );
+        if (sources.isEmpty) {
+          throw const ApiException('No screen is available to share.');
+        }
+        await participant.setScreenShareEnabled(
+          true,
+          screenShareCaptureOptions: ScreenShareCaptureOptions(
+            sourceId: sources.first.id,
+            maxFrameRate: 15,
+          ),
+        );
+      } else {
+        await participant.setScreenShareEnabled(true, captureScreenAudio: true);
+      }
       screenShareEnabled = true;
     } catch (exception) {
       error = _friendlyError(exception, screenShare: true);
@@ -166,6 +367,7 @@ class RoomVoiceService extends ChangeNotifier {
     _listener = null;
     _room = null;
     _roomId = null;
+    _activeSpeakerIds = const {};
     connected = false;
     microphoneEnabled = false;
     screenShareEnabled = false;

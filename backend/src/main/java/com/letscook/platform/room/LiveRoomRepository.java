@@ -94,7 +94,7 @@ public class LiveRoomRepository {
     public List<Participant> participants(UUID roomId) {
         return jdbc.sql("""
                         SELECT u.id,u.username,u.display_name,u.avatar_url,rm.role,
-                               rm.can_share_screen,rm.can_add_videos,rm.can_view_video,
+                               rm.can_share_screen,rm.screen_share_requested,rm.can_add_videos,rm.can_view_video,
                                rm.video_access_requested
                         FROM room_live_presence p
                         JOIN app_users u ON u.id=p.user_id
@@ -107,6 +107,7 @@ public class LiveRoomRepository {
                         rs.getObject("id", UUID.class), rs.getString("username"),
                         rs.getString("display_name"), rs.getString("avatar_url"),
                         RoomRole.valueOf(rs.getString("role")), rs.getBoolean("can_share_screen"),
+                        rs.getBoolean("screen_share_requested"),
                         rs.getBoolean("can_add_videos"), rs.getBoolean("can_view_video"),
                         rs.getBoolean("video_access_requested")))
                 .list();
@@ -313,7 +314,8 @@ public class LiveRoomRepository {
         jdbc.sql("UPDATE room_members SET role='CO_HOST' WHERE room_id=:room AND role='HOST'")
                 .param("room", roomId).update();
         jdbc.sql("""
-                        UPDATE room_members SET role='HOST',can_share_screen=true,can_add_videos=true
+                        UPDATE room_members SET role='HOST',can_share_screen=true,can_add_videos=true,
+                          can_view_video=true,video_access_requested=false
                         WHERE room_id=:room AND user_id=:user
                         """)
                 .param("room", roomId).param("user", userId).update();

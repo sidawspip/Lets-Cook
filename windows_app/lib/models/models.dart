@@ -28,6 +28,7 @@ class PartyRoom {
     required this.id,
     required this.name,
     required this.viewerCount,
+    this.ownerName,
     this.description,
     this.mediaTitle,
     this.mediaId,
@@ -44,6 +45,7 @@ class PartyRoom {
   final String id;
   final String name;
   final int viewerCount;
+  final String? ownerName;
   final String? description;
   final String? mediaTitle;
   final String? mediaId;
@@ -59,12 +61,14 @@ class PartyRoom {
   PartyRoom copyWith({
     String? name,
     String? description,
+    String? role,
     String? accessPolicy,
     String? visibility,
   }) => PartyRoom(
     id: id,
     name: name ?? this.name,
     viewerCount: viewerCount,
+    ownerName: ownerName,
     description: description ?? this.description,
     mediaTitle: mediaTitle,
     mediaId: mediaId,
@@ -73,7 +77,7 @@ class PartyRoom {
     positionSeconds: positionSeconds,
     durationSeconds: durationSeconds,
     joined: joined,
-    role: role,
+    role: role ?? this.role,
     accessPolicy: accessPolicy ?? this.accessPolicy,
     visibility: visibility ?? this.visibility,
   );
@@ -82,6 +86,7 @@ class PartyRoom {
     id: json['id'] as String,
     name: json['name'] as String,
     viewerCount: (json['viewerCount'] ?? json['memberCount'] ?? 0) as int,
+    ownerName: json['ownerName'] as String?,
     description: json['description'] as String?,
     mediaTitle: json['mediaTitle'] as String?,
     mediaId: json['mediaId'] as String?,
@@ -130,21 +135,26 @@ class RoomWatchState {
   final DateTime? serverTime;
 
   RoomWatchState copyWith({
+    String? provider,
+    String? sourceType,
+    String? sourceUrl,
+    String? thumbnailUrl,
     String? mediaId,
     String? title,
     bool? playing,
     double? positionSeconds,
+    double? durationSeconds,
   }) => RoomWatchState(
     roomId: roomId,
-    provider: provider,
-    sourceType: sourceType,
-    sourceUrl: sourceUrl,
-    thumbnailUrl: thumbnailUrl,
+    provider: provider ?? this.provider,
+    sourceType: sourceType ?? this.sourceType,
+    sourceUrl: sourceUrl ?? this.sourceUrl,
+    thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
     mediaId: mediaId ?? this.mediaId,
     title: title ?? this.title,
     playing: playing ?? this.playing,
     positionSeconds: positionSeconds ?? this.positionSeconds,
-    durationSeconds: durationSeconds,
+    durationSeconds: durationSeconds ?? this.durationSeconds,
     playbackRate: playbackRate,
     revision: revision,
     updatedAt: updatedAt,
@@ -180,6 +190,7 @@ class QueueItem {
     this.personalPosition = 0,
     this.personalQueueItem = true,
     this.thumbnailUrl,
+    this.sourceUrl,
     this.voteCount = 0,
     this.votedByMe = false,
     this.pickers = const [],
@@ -194,6 +205,7 @@ class QueueItem {
   final int personalPosition;
   final bool personalQueueItem;
   final String? thumbnailUrl;
+  final String? sourceUrl;
   final int voteCount;
   final bool votedByMe;
   final List<QueuePicker> pickers;
@@ -208,6 +220,7 @@ class QueueItem {
     personalPosition: (json['personalPosition'] as num? ?? 0).toInt(),
     personalQueueItem: (json['personalQueueItem'] as bool?) ?? true,
     thumbnailUrl: json['thumbnailUrl'] as String?,
+    sourceUrl: json['sourceUrl'] as String?,
     voteCount: (json['voteCount'] ?? 0) as int,
     votedByMe: (json['votedByMe'] ?? false) as bool,
     pickers: (json['pickers'] as List<dynamic>? ?? const [])
@@ -273,6 +286,7 @@ class MediaResource {
     this.thumbnailUrl,
     this.channelTitle,
     this.sourcePageUrl,
+    this.sourceUrl,
   });
 
   final String provider;
@@ -281,6 +295,10 @@ class MediaResource {
   final String? thumbnailUrl;
   final String? channelTitle;
   final String? sourcePageUrl;
+
+  /// Transient playable URL for Web resources. [mediaId] remains the stable
+  /// provider/page identity so an expired signed stream can be resolved again.
+  final String? sourceUrl;
 
   String get normalizedProvider => provider.trim().toUpperCase();
   bool get isYoutube => normalizedProvider == 'YOUTUBE';

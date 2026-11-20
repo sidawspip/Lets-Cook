@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
+import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter_appauth/flutter_appauth.dart';
-import 'package:google_sign_in/google_sign_in.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_config.dart';
 import '../models/models.dart';
@@ -47,11 +50,8 @@ class LetsCookApi {
   final http.Client _client;
   StoredSession? _session;
   Future<void>? _refreshInFlight;
+  Timer? _sessionRefreshTimer;
   static const _networkTimeout = Duration(seconds: 12);
-  static const _appAuth = FlutterAppAuth();
-  static final _googleSignIn = GoogleSignIn.instance;
-  static Future<void>? _googleInitialization;
-  static const _nativeGoogleSession = 'native-google';
 
   bool get hasSession => _session != null;
   Future<String> accessToken() async {
@@ -64,11 +64,37 @@ class LetsCookApi {
     if (_session == null) return false;
     try {
       await _ensureFreshToken();
+      if (_session == null) return false;
+      startSessionRefresh();
       return true;
-    } catch (_) {
+    } on ApiException catch (exception) {
+      if (exception.statusCode != 401) rethrow;
       await logout();
       return false;
+    } catch (_) {
+      // Do not erase a saved login during a temporary auth outage.
+      startSessionRefresh();
+      return true;
     }
+  }
+
+  void startSessionRefresh() {
+    _sessionRefreshTimer?.cancel();
+    if (_session == null) return;
+    _sessionRefreshTimer = Timer.periodic(const Duration(minutes: 1), (
+      _,
+    ) async {
+      try {
+        await _ensureFreshToken();
+      } catch (_) {
+        // Retry at the next interval or authenticated request.
+      }
+    });
+  }
+
+  void dispose() {
+    _sessionRefreshTimer?.cancel();
+    _client.close();
   }
 
   Future<void> login(String username, String password) async {
@@ -83,7 +109,7 @@ class LetsCookApi {
             'grant_type': 'password',
             'username': username,
             'password': password,
-            'scope': 'openid profile email',
+            'scope': 'openid profile email offline_access',
           },
         )
         .timeout(_networkTimeout);
@@ -93,97 +119,134 @@ class LetsCookApi {
       );
     }
     await _acceptTokenResponse(response);
+    startSessionRefresh();
   }
 
-  Future<void> loginWithIdentityProvider(String provider) async {
-    if (provider == 'google') {
-      await _loginWithNativeGoogle(interactive: true);
-      return;
-    }
-    final result = await _appAuth.authorizeAndExchangeCode(
-      AuthorizationTokenRequest(
-        AppConfig.clientId,
-        AppConfig.oauthRedirectUrl,
-        discoveryUrl: AppConfig.oidcDiscoveryUrl,
-        scopes: const ['openid', 'profile', 'email', 'offline_access'],
-        additionalParameters: {'kc_idp_hint': provider},
-        allowInsecureConnections: AppConfig.authBaseUrl.startsWith('http://'),
-      ),
-    );
-    final accessToken = result.accessToken;
-    if (accessToken == null || accessToken.isEmpty) {
-      throw const ApiException(
-        'The identity provider did not return an access token.',
-      );
-    }
-    _session = StoredSession(
-      accessToken: accessToken,
-      refreshToken: result.refreshToken ?? '',
-      expiresAt:
-          result.accessTokenExpirationDateTime ??
-          DateTime.now().add(const Duration(minutes: 5)),
-    );
-    await _store.saveSession(_session!);
-  }
+  Future<void> loginWithIdentityProvider(String provider) =>
+      _loginWithDesktopBrowser(provider);
 
   Future<void> logout() async {
-    final nativeGoogle = _session?.refreshToken == _nativeGoogleSession;
+    _sessionRefreshTimer?.cancel();
     _session = null;
     await _store.clearSession();
-    if (nativeGoogle) {
-      try {
-        await _initializeGoogle();
-        await _googleSignIn.signOut();
-      } catch (_) {
-        // The local app session is already cleared; Google sign-out is best effort.
-      }
-    }
   }
 
-  Future<void> _loginWithNativeGoogle({required bool interactive}) async {
-    await _initializeGoogle();
-    GoogleSignInAccount? account;
-    if (interactive) {
-      account = await _googleSignIn.authenticate();
-    } else {
-      final attempt = _googleSignIn.attemptLightweightAuthentication(
-        reportAllExceptions: true,
+  Future<void> _loginWithDesktopBrowser(String provider) async {
+    final redirectUri = Uri.parse(AppConfig.desktopOauthRedirectUrl);
+    HttpServer? callbackServer;
+    try {
+      callbackServer = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        redirectUri.port,
+        shared: false,
       );
-      account = attempt == null ? null : await attempt;
-    }
-    final idToken = account?.authentication.idToken;
-    if (idToken == null || idToken.isEmpty) {
+    } on SocketException {
       throw const ApiException(
-        'Google needs you to choose an account again.',
-        401,
+        'Could not start the secure sign-in callback. Close another Xynk window and try again.',
       );
     }
-    final response = await _client
-        .post(
-          Uri.parse('${AppConfig.apiBaseUrl}/auth/google/native'),
-          headers: const {'Content-Type': 'application/json'},
-          body: jsonEncode({'idToken': idToken}),
-        )
-        .timeout(_networkTimeout);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      String? message;
-      try {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        message = (json['detail'] ?? json['message'] ?? json['error'])
-            ?.toString();
-      } catch (_) {}
-      throw ApiException(
-        message?.isNotEmpty == true
-            ? message!
-            : 'Native Google sign-in failed (${response.statusCode}).',
-        response.statusCode,
+
+    final verifier = _oauthRandom(64);
+    final challenge = base64Url
+        .encode(sha256.convert(utf8.encode(verifier)).bytes)
+        .replaceAll('=', '');
+    final state = _oauthRandom(32);
+    final authorizationUri =
+        Uri.parse(
+          '${AppConfig.authBaseUrl}/realms/${AppConfig.realm}/protocol/openid-connect/auth',
+        ).replace(
+          queryParameters: {
+            'client_id': AppConfig.clientId,
+            'redirect_uri': redirectUri.toString(),
+            'response_type': 'code',
+            'scope': 'openid profile email offline_access',
+            'code_challenge': challenge,
+            'code_challenge_method': 'S256',
+            'state': state,
+            'kc_idp_hint': provider,
+          },
+        );
+
+    try {
+      final opened = await launchUrl(
+        authorizationUri,
+        mode: LaunchMode.externalApplication,
       );
+      if (!opened) {
+        throw const ApiException('Could not open the browser for sign-in.');
+      }
+      final request = await callbackServer.first.timeout(
+        const Duration(minutes: 3),
+        onTimeout: () => throw const ApiException(
+          'Sign-in timed out. Return to Xynk and try again.',
+        ),
+      );
+      final callback = request.uri;
+      final callbackState = callback.queryParameters['state'];
+      final error = callback.queryParameters['error'];
+      final code = callback.queryParameters['code'];
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..headers.contentType = ContentType.html
+        ..write(
+          '<!doctype html><meta charset="utf-8"><title>Xynk</title>'
+          '<style>body{background:#080914;color:#fff;font:18px system-ui;display:grid;place-items:center;height:100vh;margin:0}main{text-align:center}b{color:#ee8cff}</style>'
+          '<main><h1>Sign-in complete</h1><p>You can close this window and return to <b>Xynk</b>.</p></main>',
+        );
+      await request.response.close();
+      if (callbackState != state) {
+        throw const ApiException('The sign-in response could not be verified.');
+      }
+      if (error != null) {
+        throw ApiException(
+          callback.queryParameters['error_description'] ??
+              'The identity provider cancelled sign-in.',
+        );
+      }
+      if (code == null || code.isEmpty) {
+        throw const ApiException(
+          'The identity provider returned no login code.',
+        );
+      }
+      final response = await _client
+          .post(
+            Uri.parse(
+              '${AppConfig.authBaseUrl}/realms/${AppConfig.realm}/protocol/openid-connect/token',
+            ),
+            headers: const {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: {
+              'client_id': AppConfig.clientId,
+              'grant_type': 'authorization_code',
+              'code': code,
+              'redirect_uri': redirectUri.toString(),
+              'code_verifier': verifier,
+            },
+          )
+          .timeout(_networkTimeout);
+      if (response.statusCode != HttpStatus.ok) {
+        throw ApiException(
+          'Could not complete browser sign-in (${response.statusCode}).',
+          response.statusCode,
+        );
+      }
+      await _acceptTokenResponse(response);
+      startSessionRefresh();
+    } finally {
+      await callbackServer.close(force: true);
     }
-    await _acceptTokenResponse(response);
   }
 
-  static Future<void> _initializeGoogle() => _googleInitialization ??=
-      _googleSignIn.initialize(serverClientId: AppConfig.googleWebClientId);
+  static String _oauthRandom(int length) {
+    const alphabet =
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~';
+    final random = Random.secure();
+    return List.generate(
+      length,
+      (_) => alphabet[random.nextInt(alphabet.length)],
+    ).join();
+  }
 
   Future<Profile> profile() async => Profile.fromJson(
     await _jsonRequest('GET', '/me/profile') as Map<String, dynamic>,
@@ -335,6 +398,7 @@ class LetsCookApi {
     required String title,
     String? thumbnailUrl,
     String? sourceUrl,
+    String? sourceType,
     int watchSeconds = 0,
   }) async =>
       await _jsonRequest(
@@ -346,6 +410,7 @@ class LetsCookApi {
               'title': title,
               'thumbnailUrl': thumbnailUrl,
               'sourceUrl': sourceUrl,
+              'sourceType': sourceType,
               'watchSeconds': watchSeconds,
             },
           )
@@ -396,7 +461,7 @@ class LetsCookApi {
               '/rooms',
               body: {
                 'name': name,
-                'description': "A Let's Cook watch party",
+                'description': "A Xynk watch party",
                 'accessPolicy': 'OPEN',
                 'approvalRequired': false,
                 'maxMembers': 50,
@@ -439,6 +504,45 @@ class LetsCookApi {
     await _jsonRequest('POST', '/rooms/$roomId/media-token', body: const {})
         as Map<String, dynamic>,
   );
+
+  Future<void> requestScreenShare(String roomId) async {
+    await _jsonRequest(
+      'POST',
+      '/rooms/$roomId/screen-share-request',
+      body: const {},
+    );
+  }
+
+  Future<void> setScreenPermission(
+    String roomId,
+    String userId,
+    bool allowed,
+  ) async {
+    await _jsonRequest(
+      'POST',
+      '/rooms/$roomId/members/${Uri.encodeComponent(userId)}/screen-permission',
+      body: {'allowed': allowed},
+    );
+  }
+
+  Future<void> hostMicAction(
+    String roomId,
+    String userId,
+    String action,
+  ) async {
+    await _jsonRequest(
+      'POST',
+      '/rooms/$roomId/members/${Uri.encodeComponent(userId)}/microphone-action',
+      body: {'action': action},
+    );
+  }
+
+  Future<void> kickRoomMember(String roomId, String userId) async {
+    await _jsonRequest(
+      'DELETE',
+      '/rooms/$roomId/members/${Uri.encodeComponent(userId)}',
+    );
+  }
 
   Future<List<Map<String, dynamic>>> liveParticipants(String roomId) async =>
       (await _jsonRequest('GET', '/rooms/$roomId/live/participants')
@@ -631,22 +735,27 @@ class LetsCookApi {
   Future<QueueItem> addDirectToQueue(
     String roomId,
     String provider,
-    String url, {
+    String mediaId, {
+    String? sourceUrl,
     String? title,
     String? thumbnailUrl,
   }) async {
+    final playableUrl = sourceUrl?.trim().isNotEmpty == true
+        ? sourceUrl!.trim()
+        : mediaId;
     final data =
         await _jsonRequest(
               'POST',
               '/rooms/$roomId/watch/queue',
               body: {
                 'provider': provider,
-                'mediaId': url,
+                'mediaId': mediaId,
+                'sourceUrl': playableUrl,
                 'title': title?.trim().isNotEmpty == true
                     ? title!.trim()
-                    : Uri.parse(url).pathSegments.isEmpty
+                    : Uri.parse(playableUrl).pathSegments.isEmpty
                     ? 'Direct video'
-                    : Uri.parse(url).pathSegments.last,
+                    : Uri.parse(playableUrl).pathSegments.last,
                 'thumbnailUrl': thumbnailUrl,
               },
             )
@@ -719,6 +828,7 @@ class LetsCookApi {
         'title': state.title,
         'playing': state.playing,
         'positionSeconds': state.positionSeconds,
+        'durationSeconds': state.durationSeconds,
         'playbackRate': 1.0,
       },
     );
@@ -806,10 +916,6 @@ class LetsCookApi {
   }
 
   Future<void> _performTokenRefresh(StoredSession session) async {
-    if (session.refreshToken == _nativeGoogleSession) {
-      await _loginWithNativeGoogle(interactive: false);
-      return;
-    }
     final response = await _client
         .post(
           Uri.parse(
@@ -826,6 +932,7 @@ class LetsCookApi {
     if (response.statusCode != 200) {
       throw const ApiException('Your session expired.', 401);
     }
+    if (!identical(_session, session)) return;
     await _acceptTokenResponse(response);
   }
 

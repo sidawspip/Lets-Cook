@@ -1,4 +1,4 @@
-# Let's Cook backend
+# Xynk backend API
 
 The backend is a Java 21 / Spring Boot API using PostgreSQL, Flyway, Keycloak JWT authentication, STOMP WebSockets and LiveKit token issuance.
 
@@ -23,15 +23,16 @@ Controller → Service interface → Service implementation → Repository
 From the repository root:
 
 ```powershell
-docker compose build backend
-docker compose up -d --force-recreate backend
+.\backend\scripts\dev\run.ps1
 ```
+
+This launcher uses the root `compose.yaml` and `backend/Dockerfile`; Compose starts the required database, Redis, and Keycloak services. Run `docker compose build backend` separately when only an image build is needed.
 
 Then verify the core flows:
 
 ```powershell
-.\scripts\test-core-two-accounts.ps1
-node .\scripts\test-notification-push.mjs
+.\backend\scripts\dev\test-core-two-accounts.ps1
+node .\backend\scripts\dev\test-notification-push.mjs
 ```
 
 The API listens on <http://localhost:8080>. Health information is available at <http://localhost:8080/actuator/health>.

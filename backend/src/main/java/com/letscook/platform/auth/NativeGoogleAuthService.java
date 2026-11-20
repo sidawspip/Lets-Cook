@@ -33,7 +33,7 @@ import static org.springframework.http.HttpStatus.*;
  */
 @Service
 public class NativeGoogleAuthService {
-    private static final String REALM = "lets-cook";
+    private static final String REALM = "xynk";
     private static final String GOOGLE = "google";
     private static final String JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
@@ -59,7 +59,7 @@ public class NativeGoogleAuthService {
         OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience().contains(googleWebClientId)
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error(
-                        "invalid_token", "Google token audience does not match Let's Cook.", null));
+                        "invalid_token", "Google token audience does not match Xynk.", null));
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefault(),
                 new JwtIssuerValidator("https://accounts.google.com"),

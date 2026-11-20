@@ -16,7 +16,8 @@ public final class MediaLibraryModels {
             String thumbnailUrl,
             String sourceUrl,
             Boolean sensitive,
-            Long watchSeconds) {}
+            Long watchSeconds,
+            @Size(max = 40) String sourceType) {}
 
     public record MediaFlag(@NotBlank @Size(max = 2000) String mediaId, boolean enabled) {}
 
@@ -33,7 +34,8 @@ public final class MediaLibraryModels {
             long watchSeconds,
             boolean liked,
             boolean inGallery,
-            Instant lastWatchedAt) {}
+            Instant lastWatchedAt,
+            String sourceType) {}
 
     public record Dashboard(
             List<MediaItem> history,

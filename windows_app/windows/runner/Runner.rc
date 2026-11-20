@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "world.letscook" "\0"
-            VALUE "FileDescription", "Let's Cook" "\0"
+            VALUE "CompanyName", "Xynk" "\0"
+            VALUE "FileDescription", "Xynk" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "lets_cook_windows" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 world.letscook. All rights reserved." "\0"
-            VALUE "OriginalFilename", "lets_cook_windows.exe" "\0"
-            VALUE "ProductName", "Let's Cook" "\0"
+            VALUE "InternalName", "Xynk" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Xynk. All rights reserved." "\0"
+            VALUE "OriginalFilename", "Xynk.exe" "\0"
+            VALUE "ProductName", "Xynk" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

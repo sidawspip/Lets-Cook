@@ -26,7 +26,7 @@ void main() {
     );
 
     expect(find.text('Watch together.\nStay connected.'), findsOneWidget);
-    expect(find.text("Enter Let's Cook"), findsOneWidget);
+    expect(find.text('Enter Xynk'), findsOneWidget);
 
     final loginList = find.byType(Scrollable).first;
     await tester.scrollUntilVisible(

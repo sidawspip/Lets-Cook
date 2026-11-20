@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { Client, IMessage, StompSubscription } from '@stomp/stompjs';
 import { AuthService } from './auth.service';
 
-export interface PushEvent { type:'ROOM_INVITE'|'DIRECT_MESSAGE';senderId:string;senderName:string;body:string;roomId?:string; }
+export interface PushEvent { type:'ROOM_INVITE'|'DIRECT_MESSAGE'|'SCREEN_SHARE_REQUEST'|'SCREEN_SHARE_APPROVED'|'SCREEN_SHARE_REVOKED'|'HOST_MUTE'|'HOST_UNMUTE_REQUEST';senderId:string;senderName:string;body:string;roomId?:string; }
 
 @Injectable({providedIn:'root'})
 export class NotificationStreamService {

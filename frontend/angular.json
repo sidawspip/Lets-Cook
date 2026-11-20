@@ -3,7 +3,7 @@
   "version": 1,
   "newProjectRoot": "projects",
   "projects": {
-    "lets-cook-web": {
+    "xynk-web": {
       "projectType": "application",
       "root": "",
       "sourceRoot": "src",
@@ -43,8 +43,8 @@
         "serve": {
           "builder": "@angular/build:dev-server",
           "configurations": {
-            "production": { "buildTarget": "lets-cook-web:build:production" },
-            "development": { "buildTarget": "lets-cook-web:build:development" }
+            "production": { "buildTarget": "xynk-web:build:production" },
+            "development": { "buildTarget": "xynk-web:build:development" }
           },
           "defaultConfiguration": "development"
         }

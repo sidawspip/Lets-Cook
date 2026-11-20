@@ -8,11 +8,11 @@ server:
 
 spring:
   application:
-    name: lets-cook-platform
+    name: xynk-platform
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/letscook}
-    username: ${SPRING_DATASOURCE_USERNAME:letscook}
-    password: ${SPRING_DATASOURCE_PASSWORD:letscook_dev}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/xynk}
+    username: ${SPRING_DATASOURCE_USERNAME:xynk}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
   data:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
@@ -21,7 +21,7 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          jwk-set-uri: ${SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI:http://localhost:8180/realms/lets-cook/protocol/openid-connect/certs}
+          jwk-set-uri: ${SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI:http://localhost:8180/realms/xynk/protocol/openid-connect/certs}
   flyway:
     enabled: true
   servlet:
@@ -37,12 +37,12 @@ management:
 
 app:
   auth:
-    keycloak-url: ${APP_AUTH_KEYCLOAK_URL:https://letscook.world}
+    keycloak-url: ${APP_AUTH_KEYCLOAK_URL:https://xynk.in}
     keycloak-client-id: ${KEYCLOAK_NATIVE_AUTH_CLIENT_ID:}
     keycloak-client-secret: ${KEYCLOAK_NATIVE_AUTH_CLIENT_SECRET:}
     google-web-client-id: ${GOOGLE_WEB_CLIENT_ID:}
   security:
-    issuer: ${APP_SECURITY_ISSUER:http://localhost:8180/realms/lets-cook}
+    issuer: ${APP_SECURITY_ISSUER:http://localhost:8180/realms/xynk}
   livekit:
     mode: ${LIVEKIT_MODE:self-hosted}
     cloud:
@@ -51,8 +51,8 @@ app:
       api-secret: ${LIVEKIT_CLOUD_API_SECRET:${LIVEKIT_API_SECRET:}}
     self-hosted:
       url: ${LIVEKIT_SELF_HOSTED_URL:ws://localhost:7880}
-      api-key: ${LIVEKIT_SELF_HOSTED_API_KEY:${LIVEKIT_API_KEY:devkey}}
-      api-secret: ${LIVEKIT_SELF_HOSTED_API_SECRET:${LIVEKIT_API_SECRET:lets-cook-dev-livekit-secret-32-chars}}
+      api-key: ${LIVEKIT_SELF_HOSTED_API_KEY:${LIVEKIT_API_KEY:}}
+      api-secret: ${LIVEKIT_SELF_HOSTED_API_SECRET:${LIVEKIT_API_SECRET:}}
   uploads:
     avatar-directory: ${APP_AVATAR_DIRECTORY:/app/uploads/avatars}
     message-directory: ${APP_MESSAGE_DIRECTORY:/app/uploads/messages}

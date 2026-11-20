@@ -7,15 +7,16 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../models/models.dart';
 import '../services/media_resolver.dart';
+import '../services/browser_recovery.dart';
 import '../services/public_media_links.dart';
 import '../state/watch_party_controller.dart';
 import '../widgets/media_preview.dart';
+import '../widgets/screen_share_confirmation.dart';
 
 enum _DiscoverySource { youtube, web, crunchyroll }
 
 enum _WebEngine {
   google,
-  duckDuckGo,
   directLink,
   googleDrive,
   dropbox,
@@ -49,6 +50,7 @@ class _ProviderPortal {
 class _PendingWebMedia {
   const _PendingWebMedia({
     required this.uri,
+    required this.pageUri,
     required this.sourceType,
     required this.title,
     required this.siteName,
@@ -58,6 +60,7 @@ class _PendingWebMedia {
   });
 
   final Uri uri;
+  final Uri pageUri;
   final String sourceType;
   final String title;
   final String siteName;
@@ -106,9 +109,11 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   late final TextEditingController search;
   late final WebViewController browser;
   Timer? debounce;
+  Timer? webScrapeDebounce;
   _DiscoverySource? source;
   _WebEngine? webEngine;
   bool loading = false;
+  bool recoveringBrowser = false;
   String? browserError;
   bool committing = false;
   bool resolvingPage = false;
@@ -121,6 +126,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   DateTime? readyWebPageAt;
   String? webPlayIntentHost;
   DateTime? webPlayIntentAt;
+  String? lastWebScrapeIdentity;
   _PendingWebMedia? pendingWebMedia;
   _PendingCrunchyrollMedia? pendingCrunchyrollMedia;
   bool ignoreInitialMediaSelection = false;
@@ -129,10 +135,6 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     _WebEngine.google => _ProviderPortal(
       label: 'Google',
       home: Uri.parse('https://www.google.com/'),
-    ),
-    _WebEngine.duckDuckGo => _ProviderPortal(
-      label: 'DuckDuckGo',
-      home: Uri.parse('https://duckduckgo.com/'),
     ),
     _WebEngine.directLink => _ProviderPortal(
       label: 'Public video URL',
@@ -236,7 +238,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
-            final generation = ++webPageGeneration;
+            webPageGeneration++;
             if (mounted) {
               setState(() {
                 loading = true;
@@ -257,59 +259,87 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                 }
               });
             }
-            if (source == _DiscoverySource.web) {
-              unawaited(_waitForWebPlayer(generation));
-            }
           },
           onPageFinished: (url) async {
             final finishedUri = Uri.tryParse(url);
             if (source == _DiscoverySource.web) {
+              if (!mounted ||
+                  browserError != null ||
+                  finishedUri == null ||
+                  (currentUri != null &&
+                      finishedUri.replace(fragment: '') !=
+                          currentUri!.replace(fragment: ''))) {
+                return;
+              }
               // Publish the completed main-frame URL immediately. JavaScript
               // bridge installation can take a moment (or fail on a hostile
               // page), but that must not hide the explicit Play in room
               // action from the user.
-              if (mounted) {
-                setState(() {
-                  currentUri = finishedUri;
-                  loading = false;
-                });
-              } else {
+              setState(() {
                 currentUri = finishedUri;
-              }
+                loading = false;
+              });
             }
             if (source == _DiscoverySource.youtube) {
               await _prepareYoutubePage();
             } else if (source == _DiscoverySource.web) {
-              await _installAdCleaner();
-              await _installMediaDetector();
-              await _installWebNavigationBridge();
               readyWebPage = finishedUri;
               readyWebPageAt = DateTime.now();
+              // Server scraping is the primary Rave-style path. Some sites
+              // publish the real stream only after a trusted tap starts their
+              // player, so install the complementary browser capture bridge.
+              // It ignores links, autoplay previews and ads; only an armed,
+              // content-sized <video> can emit a candidate for validation.
+              // These scripts are idempotent and independent. Do not await
+              // any platform call: some WebViews execute a timer-based
+              // bridge successfully but never complete its method channel
+              // response, which previously prevented the detector from ever
+              // being installed.
+              unawaited(_installAdCleaner());
+              unawaited(_installMediaDetector());
+              unawaited(_installWebNavigationBridge());
               final engine = webEngine;
               final provider = _browserProviderCode(engine);
               if (!ignoreInitialMediaSelection &&
                   engine != null &&
                   provider != null &&
                   finishedUri != null &&
-                  _looksLikeSelectedProviderMedia(engine, finishedUri)) {
-                if (_publicLinkProvider(engine) != null) {
-                  await _selectCurrentWebPage();
-                  return;
-                }
-                await _commitProviderPage(finishedUri, provider);
+                  _looksLikeSelectedProviderMedia(engine, finishedUri) &&
+                  _publicLinkProvider(engine) != null) {
+                await _selectCurrentWebPage();
                 return;
+              }
+              if (finishedUri != null) {
+                _scheduleRaveStyleWebScrape(finishedUri);
               }
             } else if (source == _DiscoverySource.crunchyroll) {
               await _installCrunchyrollSelectionBridge();
+              await _captureCrunchyrollEpisodePage();
             }
             if (mounted) setState(() => loading = false);
           },
           onWebResourceError: (error) {
             if (error.isForMainFrame != true || !mounted) return;
+            if (error.description.toUpperCase().contains('ERR_ABORTED')) return;
+            final failedPage = Uri.tryParse(error.url ?? '');
+            if (failedPage != null &&
+                failedPage.hasAuthority &&
+                currentUri != null &&
+                failedPage.replace(fragment: '') !=
+                    currentUri!.replace(fragment: '')) {
+              return;
+            }
+            webScrapeDebounce?.cancel();
             setState(() {
+              webPageGeneration++;
               loading = false;
-              browserError =
-                  'This page could not be loaded. Check your connection or try another result.';
+              resolvingPage = false;
+              preparingWebVideo = false;
+              pendingWebMedia = null;
+              pendingCrunchyrollMedia = null;
+              readyWebPage = null;
+              readyWebPageAt = null;
+              browserError = browserFailureMessage(error.description);
             });
           },
           onUrlChange: (change) {
@@ -374,6 +404,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   void dispose() {
     webPageGeneration++;
     debounce?.cancel();
+    webScrapeDebounce?.cancel();
     search.dispose();
     super.dispose();
   }
@@ -476,7 +507,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   Widget _buildSourceGallery() => Column(
     children: [
       _DiscoveryHeader(
-        title: "LET'S COOK",
+        title: "XYNK",
         onBack: () => Navigator.pop(context),
       ),
       Expanded(
@@ -578,10 +609,10 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               onTap: _openLikes,
             ),
             _SourceCard(
-              name: 'Crunchyroll\nDRM later',
+              name: 'Crunchyroll',
               icon: Icons.ondemand_video_rounded,
               accent: const Color(0xFFF47521),
-              badge: 'DRM LATER',
+              onTap: () => _openInitialProvider('CRUNCHYROLL'),
             ),
             _SourceCard(
               name: 'Netflix\nDRM later',
@@ -603,6 +634,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
 
   Future<void> _startScreenSharing() async {
     try {
+      if (!await confirmScreenShare(context)) return;
       await widget.controller.startScreenSharing(
         targetRoomId: widget.targetRoomId,
       );
@@ -672,7 +704,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           const Icon(Icons.language_rounded, size: 74, color: Colors.white70),
           const SizedBox(height: 18),
           const Text(
-            'Choose your search engine',
+            'Search the web with Google',
             style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 8),
@@ -687,31 +719,16 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           const SizedBox(height: 28),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 22),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _EngineCard(
-                    name: 'Google',
-                    letter: 'G',
-                    colors: const [
-                      Color(0xFF4285F4),
-                      Color(0xFFEA4335),
-                      Color(0xFFFBBC05),
-                      Color(0xFF34A853),
-                    ],
-                    onTap: () => _chooseEngine(_WebEngine.google),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: _EngineCard(
-                    name: 'DuckDuckGo',
-                    letter: 'D',
-                    colors: const [Color(0xFFF26A32), Color(0xFFDE3F25)],
-                    onTap: () => _chooseEngine(_WebEngine.duckDuckGo),
-                  ),
-                ),
+            child: _EngineCard(
+              name: 'Google',
+              letter: 'G',
+              colors: const [
+                Color(0xFF4285F4),
+                Color(0xFFEA4335),
+                Color(0xFFFBBC05),
+                Color(0xFF34A853),
               ],
+              onTap: () => _chooseEngine(_WebEngine.google),
             ),
           ),
           const Spacer(flex: 2),
@@ -721,11 +738,17 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     final directReady =
         currentUri != null &&
         (_isDirect(currentUri!) || _isCloudDownloadCandidate(currentUri!));
+    final providerPageReady =
+        currentUri != null &&
+        webEngine != null &&
+        _browserProviderCode(webEngine) != null &&
+        _looksLikeSelectedProviderMedia(webEngine!, currentUri!);
     final portal = _providerPortal(webEngine!);
     return Column(
       children: [
         _DiscoveryHeader(
           title: portal.label,
+          onBrowserRecovery: _showBrowserRecovery,
           onBack: _handleDiscoveryBack,
           onHistory: _openHistory,
           onLike: _openLikes,
@@ -740,7 +763,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                   ? 'No ads. Paste a public direct MP4 or HLS link. It is verified before joining a room.'
                   : portal.shareLinkOnly
                   ? 'No ads. Open ${portal.label}, copy a shared video link, and paste it below.'
-                  : "Let's Cook adds no ads. Sign in with your own account if needed, open a video, then add that page to the room. "
+                  : "Xynk adds no ads. Sign in with your own account if needed, open a video, then add that page to the room. "
                         'Every viewer uses their own provider access.',
               textAlign: TextAlign.center,
               style: const TextStyle(
@@ -750,7 +773,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               ),
             ),
           ),
-        // Google and DuckDuckGo already provide their own search field inside
+        // Google already provides its own search field inside
         // the page. Keep our URL input only for provider/share-link flows that
         // cannot reliably expose a native picker in the embedded browser.
         if (portal.provider)
@@ -798,13 +821,15 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           ),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 220),
-          child: directReady
+          child: directReady || providerPageReady
               ? Padding(
                   padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
                   child: SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: _chooseDirect,
+                      onPressed: directReady
+                          ? _chooseDirect
+                          : _selectCurrentWebPage,
                       icon: const Icon(Icons.add_to_queue_rounded),
                       label: Text(
                         widget.targetRoomId == null
@@ -835,7 +860,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         color: const Color(0xFF24170F),
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 11),
         child: const Text(
-          'BETA · Sign in with your own Crunchyroll account. Lets Cook does not read or store your password, cookies, or DRM licence.',
+          'BETA · Sign in with your own Crunchyroll account. Xynk uses provider cookies and licence responses on this device for playback; they are not sent to Xynk rooms.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: Color(0xFFFFC49A),
@@ -847,6 +872,74 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       Expanded(child: _browserSurface()),
     ],
   );
+
+  Future<void> _showBrowserRecovery() async {
+    final clearCache = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.refresh_rounded),
+              title: const Text('Reload page'),
+              onTap: () => Navigator.pop(context, false),
+            ),
+            ListTile(
+              leading: const Icon(Icons.cleaning_services_rounded),
+              title: const Text('Clear cached files and reload'),
+              subtitle: const Text('Your provider sign-ins are kept.'),
+              onTap: () => Navigator.pop(context, true),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (clearCache != null && mounted) {
+      await _recoverBrowser(clearCache: clearCache);
+    }
+  }
+
+  Future<void> _recoverBrowser({bool clearCache = false}) async {
+    if (recoveringBrowser || committing) return;
+    final page = currentUri;
+    if (page == null || !{'http', 'https'}.contains(page.scheme)) return;
+    webScrapeDebounce?.cancel();
+    setState(() {
+      recoveringBrowser = true;
+      webPageGeneration++;
+      browserError = null;
+      pendingWebMedia = null;
+      pendingCrunchyrollMedia = null;
+      resolvingPage = false;
+      preparingWebVideo = false;
+      readyWebPage = null;
+      readyWebPageAt = null;
+      webPlayIntentHost = null;
+      webPlayIntentAt = null;
+      lastWebScrapeIdentity = null;
+    });
+    final recoveryGeneration = webPageGeneration;
+    try {
+      if (clearCache) await browser.clearCache();
+      if (!mounted ||
+          currentUri != page ||
+          webPageGeneration != recoveryGeneration) {
+        return;
+      }
+      await browser.loadRequest(page);
+    } catch (_) {
+      if (mounted &&
+          currentUri == page &&
+          webPageGeneration == recoveryGeneration) {
+        setState(
+          () => browserError = 'The page could not be reloaded. Try again.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => recoveringBrowser = false);
+    }
+  }
 
   Widget _browserSurface() => ClipRRect(
     borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
@@ -881,12 +974,15 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                       ),
                       const SizedBox(height: 16),
                       OutlinedButton.icon(
-                        onPressed: () async {
-                          setState(() => browserError = null);
-                          await browser.reload();
-                        },
+                        onPressed: recoveringBrowser ? null : _recoverBrowser,
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('Try again'),
+                      ),
+                      TextButton(
+                        onPressed: recoveringBrowser
+                            ? null
+                            : () => _recoverBrowser(clearCache: true),
+                        child: const Text('Clear cached files and retry'),
                       ),
                     ],
                   ),
@@ -1055,41 +1151,10 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
 
   Future<void> _playLibraryItem(ViewingActivity item) async {
     setState(() => committing = true);
-    final provider = item.provider.toUpperCase();
-    if (provider == 'YOUTUBE') {
-      final videoId = _storedYoutubeVideoId(item.mediaId);
-      if (videoId == null) {
-        setState(() => committing = false);
-        _showMessage('This saved YouTube item no longer has a valid video ID.');
-        return;
-      }
-      await widget.controller.selectYoutubeVideo(
-        VideoSuggestion(
-          videoId: videoId,
-          title: item.title,
-          channelTitle: 'YouTube',
-          thumbnailUrl: item.thumbnailUrl,
-          provider: provider,
-        ),
-        targetRoomId: widget.targetRoomId,
-      );
-    } else if (provider == 'DIRECT_MP4' || provider == 'DIRECT_HLS') {
-      await widget.controller.selectDirectVideo(
-        item.mediaId,
-        targetRoomId: widget.targetRoomId,
-        sourceType: provider,
-        title: item.title,
-        thumbnailUrl: item.thumbnailUrl,
-      );
-    } else {
-      await widget.controller.selectProviderMedia(
-        provider: provider,
-        mediaId: item.mediaId,
-        title: item.title,
-        thumbnailUrl: item.thumbnailUrl,
-        targetRoomId: widget.targetRoomId,
-      );
-    }
+    await widget.controller.selectViewingActivity(
+      item,
+      targetRoomId: widget.targetRoomId,
+    );
     if (!mounted) return;
     if (widget.controller.error == null) {
       Navigator.pop(context);
@@ -1262,11 +1327,12 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     FocusScope.of(context).unfocus();
     setState(() {
       source = _DiscoverySource.web;
-      webEngine = null;
+      webEngine = _WebEngine.google;
       currentUri = null;
       selectedPageTitle = null;
       resolvingPage = false;
     });
+    browser.loadRequest(_providerPortal(_WebEngine.google).home);
   }
 
   void _openProviderPortal(_WebEngine engine) {
@@ -1319,7 +1385,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             portal.label == 'Public video URL'
                 ? 'Paste a public HTTPS .mp4 or .m3u8 address above. The link is checked before it is added to a room.'
                 : 'Create a viewable shared link, copy it, return here, and paste it above. '
-                      'Let’s Cook stores the video reference—not your cloud password.',
+                      'Xynk stores the video reference—not your cloud password.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white60, height: 1.45),
           ),
@@ -1352,13 +1418,20 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             const describe = (item) => {
               const card = item.closest('article, li, section, div');
               const image = (card && card.querySelector('img')) || item.querySelector('img');
+              const episodeUrl = new URL(item.href, location.href);
+              const slug = episodeUrl.pathname.split('/').filter(Boolean)[2] || '';
+              const episodeTitle = slug.split('-').filter(Boolean)
+                .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+              const label = String(
+                item.getAttribute('aria-label') || item.title ||
+                (card && card.querySelector('h1,h2,h3,h4,[class*="title"]')?.textContent) ||
+                item.textContent || document.title || 'Crunchyroll episode'
+              ).replace(/\s+/g, ' ').trim();
+              const episodeNumber = label.match(/\b(?:Episode\s*|E)(\d+)\b/i)?.[1];
               return {
-                url: new URL(item.href, location.href).href,
-                title: String(
-                  item.getAttribute('aria-label') || item.title ||
-                  (card && card.querySelector('h1,h2,h3,h4,[class*="title"]')?.textContent) ||
-                  item.textContent || document.title || 'Crunchyroll episode'
-                ).replace(/\s+/g, ' ').trim(),
+                url: episodeUrl.href,
+                title: /^(?:start watching|continue(?: episode)?|up next)\b/i.test(label) && episodeTitle
+                  ? (episodeNumber ? `E${episodeNumber} – ${episodeTitle}` : episodeTitle) : label,
                 posterUrl: image ? (image.currentSrc || image.src || '') : ''
               };
             };
@@ -1380,7 +1453,61 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               ...selected,
               nextEpisodes
             }));
+            // Crunchyroll navigates episode links within its SPA, where
+            // onPageFinished may not run. Capture the episode heading once
+            // that route renders instead of keeping the button's CTA text.
+            let checks = 0;
+            const selectedUrl = selected.url;
+            const checkEpisodeTitle = () => {
+              if (location.href !== selectedUrl) {
+                if (++checks < 40) setTimeout(checkEpisodeTitle, 500);
+                return;
+              }
+              const heading = [...document.querySelectorAll('h1,h2,h3')]
+                .map((item) => (item.textContent || '').replace(/\s+/g, ' ').trim())
+                .find((value) => /^E\d+\s*[–—-]\s*\S/i.test(value));
+              if (heading) {
+                CrunchyrollSelection.postMessage(JSON.stringify({
+                  url: selectedUrl,
+                  title: heading,
+                  posterUrl: document.querySelector('meta[property="og:image"]')?.content || selected.posterUrl,
+                  nextEpisodes
+                }));
+              } else if (++checks < 40) {
+                setTimeout(checkEpisodeTitle, 500);
+              }
+            };
+            setTimeout(checkEpisodeTitle, 500);
           }, true);
+        })();
+      ''');
+    } catch (_) {}
+  }
+
+  Future<void> _captureCrunchyrollEpisodePage() async {
+    try {
+      await browser.runJavaScript(r'''
+        (() => {
+          if (!/^\/watch\/[A-Za-z0-9]+/.test(location.pathname)) return;
+          const pageUrl = location.href;
+          let attempts = 0;
+          const capture = () => {
+            if (location.href !== pageUrl) return;
+            const heading = [...document.querySelectorAll('h1,h2,h3')]
+              .map((item) => (item.textContent || '').replace(/\s+/g, ' ').trim())
+              .find((value) => /^E\d+\s*[–—-]\s*\S/i.test(value));
+            if (heading) {
+              const posterUrl = document.querySelector('meta[property="og:image"]')?.content || '';
+              CrunchyrollSelection.postMessage(JSON.stringify({
+                url: pageUrl,
+                title: heading,
+                posterUrl
+              }));
+            } else if (++attempts < 12) {
+              setTimeout(capture, 500);
+            }
+          };
+          capture();
         })();
       ''');
     } catch (_) {}
@@ -1496,12 +1623,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       return;
     }
     if (source == _DiscoverySource.web && webEngine != null) {
-      setState(() {
-        webEngine = null;
-        currentUri = null;
-        selectedPageTitle = null;
-        resolvingPage = false;
-      });
+      _backToSources();
       return;
     }
     _backToSources();
@@ -1546,11 +1668,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       browser.loadRequest(portal.home);
       return;
     }
-    browser.loadRequest(
-      engine == _WebEngine.duckDuckGo
-          ? Uri.https('duckduckgo.com', '/', {'q': value})
-          : Uri.https('www.google.com', '/search', {'q': value}),
-    );
+    browser.loadRequest(Uri.https('www.google.com', '/search', {'q': value}));
   }
 
   Uri _normalizedProviderVideoUri(Uri uri, _WebEngine? engine) {
@@ -1579,17 +1697,72 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       final data = jsonDecode(message) as Map<String, dynamic>;
       final uri = Uri.tryParse((data['url'] as String? ?? '').trim());
       if (uri == null || !const {'http', 'https'}.contains(uri.scheme)) return;
+      final changed = currentUri != uri;
       setState(() {
+        if (changed) {
+          // Same-document navigation does not call onPageStarted. Give it a
+          // new generation so an older scrape cannot publish a stale card.
+          webPageGeneration++;
+          resolvingPage = false;
+          pendingWebMedia = null;
+        }
+        currentUri = uri;
+        readyWebPage = uri;
+        readyWebPageAt = DateTime.now();
         selectedPageTitle = (data['title'] as String? ?? '').trim();
-        // Link titles are metadata; they must not clear an active resolution.
       });
+      _scheduleRaveStyleWebScrape(uri);
     } catch (_) {}
   }
 
+  String _webScrapeIdentity(Uri uri) => uri
+      .replace(query: '', fragment: '')
+      .toString()
+      .replaceFirst(RegExp(r'/$'), '');
+
+  bool _isRaveStyleWebScrapeCandidate(Uri uri) {
+    if (uri.scheme != 'https' || uri.host.isEmpty) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.isEmpty ? '/' : uri.path;
+    final isGoogle =
+        host == 'google.com' ||
+        host.startsWith('www.google.') ||
+        host.contains('.google.');
+    if (isGoogle || path == '/') return false;
+
+    final home = webEngine == null ? null : _providerPortal(webEngine!).home;
+    if (home != null && _webScrapeIdentity(home) == _webScrapeIdentity(uri)) {
+      return false;
+    }
+    return true;
+  }
+
+  void _scheduleRaveStyleWebScrape(Uri uri) {
+    // Generic Web waits for the selected site's player to emit MediaIntent
+    // or MediaDetector. A page can contain previews and multiple videos.
+    if (webEngine == _WebEngine.google || webEngine == null) return;
+    if (!_isRaveStyleWebScrapeCandidate(uri) || committing) return;
+    final identity = _webScrapeIdentity(uri);
+    if (identity == lastWebScrapeIdentity &&
+        (resolvingPage || pendingWebMedia != null)) {
+      return;
+    }
+    lastWebScrapeIdentity = identity;
+    webScrapeDebounce?.cancel();
+    webScrapeDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted || source != _DiscoverySource.web || currentUri != uri) {
+        return;
+      }
+      unawaited(_resolveSelectedWebPage(uri, showFailure: false));
+    });
+  }
+
   void _handleMediaIntent(String message) {
-    if (preparingWebVideo) return;
     if (source != _DiscoverySource.web || loading) return;
-    final intentPage = Uri.tryParse(message.trim());
+    final iframe = message.startsWith('iframe:');
+    final intentPage = Uri.tryParse(
+      (iframe ? message.substring(6) : message).trim(),
+    );
     final readyPage = readyWebPage;
     final readyAt = readyWebPageAt;
     if (intentPage == null ||
@@ -1600,18 +1773,35 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     }
     webPlayIntentHost = intentPage.host.toLowerCase();
     webPlayIntentAt = DateTime.now();
-    // Resolve from the selected page immediately, like provider-backed watch
-    // apps do. The in-page detector continues in parallel and can still win
-    // when the stream appears only after playback begins.
-    unawaited(_resolveSelectedWebPage(intentPage));
+    if (webEngine == _WebEngine.google || webEngine == null) {
+      // A page-wide scrape can select a different video than the one tapped.
+      // Prefer the armed element; reserve page resolution for iframe players
+      // whose media cannot be observed from the parent document.
+      if (!iframe) return;
+    }
+    // The JavaScript bridge emits this only for a trusted interaction inside
+    // a content-sized player. This is the Rave-style scrape boundary: page
+    // navigation alone does nothing; opening/playing the real player starts
+    // normalization and validation while MediaDetector captures local URLs.
+    final engine = webEngine;
+    final provider = _browserProviderCode(engine);
+    if (engine != null &&
+        provider != null &&
+        _looksLikeSelectedProviderMedia(engine, intentPage)) {
+      unawaited(_commitProviderPage(intentPage, provider));
+      return;
+    }
+    unawaited(_resolveSelectedWebPage(intentPage, showFailure: false));
   }
 
   // Observe document readiness independently of page-finished: third-party
-  // resources can keep that callback waiting after the player is usable.
+  // resources can keep that callback waiting after the player is usable. This
+  // observer only marks the page as player-capable. It must never resolve or
+  // queue media until the user actually clicks/plays that player.
+  // Legacy DOM detector retained for compatibility diagnostics; the active
+  // Web flow is URL change -> centralized resolver.
+  // ignore: unused_element
   Future<void> _waitForWebPlayer(int generation) async {
-    String? candidatePage;
-    DateTime? playerSeenAt;
-    var attempts = 0;
     for (var tick = 0; tick < 90; tick++) {
       await Future<void>.delayed(const Duration(milliseconds: 500));
       if (!mounted ||
@@ -1627,14 +1817,17 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             const host = location.hostname.toLowerCase();
             if (document.readyState === 'loading' ||
                 host === 'google.com' || host.startsWith('www.google.') ||
-                host.includes('.google.') || host === 'duckduckgo.com' ||
-                host.endsWith('.duckduckgo.com')) return '';
+                host.includes('.google.')) return '';
             const nodes = document.querySelectorAll(
               'video, [data-player], [class*="video-player"], [class*="player-container"], iframe[src*="/embed/"]'
             );
             const present = Array.from(nodes).some(node => {
               const rect = node.getBoundingClientRect();
-              return rect.width >= 160 && rect.height >= 90 &&
+              // Small autoplaying profile/search previews are discovery
+              // tiles, not the page's selected player. Requiring a content-
+              // sized surface prevents false Play-in-room cards there while
+              // still accepting ordinary mobile video players.
+              return rect.width >= 240 && rect.height >= 135 &&
                 !node.closest('.ad, [class*="advert"], [class*="preroll"], [class*="ima-ad"], [data-ad]');
             });
             return present ? location.href : '';
@@ -1645,8 +1838,6 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         if (!mounted || generation != webPageGeneration) return;
         final uri = Uri.tryParse(page);
         if (uri == null || uri.scheme != 'https' || uri != currentUri) {
-          candidatePage = null;
-          playerSeenAt = null;
           if (preparingWebVideo || webPlayerPresent) {
             setState(() {
               preparingWebVideo = false;
@@ -1655,30 +1846,18 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           }
           continue;
         }
-        if (candidatePage != page) {
-          candidatePage = page;
-          playerSeenAt = DateTime.now();
+        if (!webPlayerPresent) {
           setState(() {
             webPlayerPresent = true;
-            preparingWebVideo = true;
+            preparingWebVideo = false;
+            loading = false;
           });
         }
-        if (DateTime.now().difference(playerSeenAt!) <
-            const Duration(milliseconds: 2500)) {
-          continue;
-        }
-        setState(() {
-          preparingWebVideo = false;
-          loading = false;
-        });
+        // Page readiness is stable identity only. MediaIntent (a trusted user
+        // click/play) or MediaDetector (the playing element's concrete stream)
+        // performs the single normalization/validation action.
         readyWebPage = uri;
-        readyWebPageAt = playerSeenAt;
-        await _resolveSelectedWebPage(uri);
-        if (++attempts >= 2 || pendingWebMedia != null) return;
-        playerSeenAt = DateTime.now();
-        if (mounted && generation == webPageGeneration) {
-          setState(() => preparingWebVideo = true);
-        }
+        readyWebPageAt ??= DateTime.now();
       } catch (_) {
         // The document may be replaced during a redirect; observe again.
       }
@@ -1722,6 +1901,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         _showPendingWebMedia(
           _PendingWebMedia(
             uri: publicMediaUri,
+            pageUri: pageUri,
             sourceType: sourceType,
             title: selectedPageTitle?.trim().isNotEmpty == true
                 ? selectedPageTitle!.trim()
@@ -1779,7 +1959,10 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                     uri.queryParameters.containsKey('resid'))),
       _WebEngine.box => hostIs('box.com') && path.contains('/file/'),
       _WebEngine.nextcloud => path.length > 1,
-      _WebEngine.archive => hostIs('archive.org') && path.contains('/details/'),
+      _WebEngine.archive =>
+        hostIs('archive.org') &&
+            path.contains('/details/') &&
+            path != '/details/movies',
       _WebEngine.x =>
         (hostIs('x.com') || hostIs('twitter.com')) && path.contains('/status/'),
       _WebEngine.twitch =>
@@ -1880,11 +2063,15 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           !const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(sourceType)) {
         return;
       }
-      if (!await probeDirectMedia(sourceUri, sourceType: sourceType)) {
+      if (!await probeDirectMedia(
+        sourceUri,
+        sourceType: sourceType,
+        sourcePage: pageUri,
+      )) {
         if (showFailure) {
           _showMessage(
             'The page returned a video address, but it was not playable. '
-            'Play the video on the page once so Lets Cook can capture the '
+            'Play the video on the page once so Xynk can capture the '
             'real stream.',
           );
         }
@@ -1899,6 +2086,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       _showPendingWebMedia(
         _PendingWebMedia(
           uri: sourceUri,
+          pageUri: pageUri,
           sourceType: sourceType,
           title: (resolved['title'] as String? ?? '').trim().isEmpty
               ? (selectedPageTitle?.trim().isNotEmpty == true
@@ -1909,6 +2097,15 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               ? pageUri.host
               : (resolved['siteName'] as String).trim(),
           selectedAt: DateTime.now(),
+          posterUrl: () {
+            final value = (resolved['thumbnailUrl'] as String? ?? '').trim();
+            final thumbnail = Uri.tryParse(value);
+            return thumbnail != null &&
+                    thumbnail.scheme == 'https' &&
+                    thumbnail.host.isNotEmpty
+                ? thumbnail.toString()
+                : null;
+          }(),
         ),
       );
     } catch (_) {
@@ -1935,34 +2132,21 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         (() => {
           if (window.__letsCookNavigationReady) return;
           window.__letsCookNavigationReady = true;
-          const report = (url, title = '') => {
+          let currentUrl = location.href;
+          const report = () => {
             try {
               WebSelection.postMessage(JSON.stringify({
-                url: new URL(url, location.href).href,
-                title: String(title || '').trim()
+                url: location.href,
+                title: String(document.title || '').trim()
               }));
             } catch (_) {}
           };
-          document.addEventListener('click', (event) => {
-            const link = event.target && event.target.closest
-              ? event.target.closest('a[href]')
-              : null;
-            if (link) report(link.href, link.innerText || link.title || '');
-          }, true);
-          const notifyPageChange = () => report(location.href, document.title || '');
-          const pushState = history.pushState;
-          history.pushState = function() {
-            const result = pushState.apply(this, arguments);
-            setTimeout(notifyPageChange, 0);
-            return result;
-          };
-          const replaceState = history.replaceState;
-          history.replaceState = function() {
-            const result = replaceState.apply(this, arguments);
-            setTimeout(notifyPageChange, 0);
-            return result;
-          };
-          addEventListener('popstate', notifyPageChange);
+          report();
+          setInterval(() => {
+            if (currentUrl === location.href) return;
+            currentUrl = location.href;
+            report();
+          }, 100);
         })();
       ''');
     } catch (_) {}
@@ -1982,10 +2166,9 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       targetRoomId: widget.targetRoomId,
     );
     if (!mounted) return;
-    final succeeded = widget.targetRoomId == null
-        ? widget.controller.activeRoom != null
-        : widget.controller.watchState?.mediaId == id ||
-              widget.controller.queue.any((item) => item.mediaId == id);
+    final succeeded =
+        widget.controller.error == null &&
+        (widget.targetRoomId != null || widget.controller.activeRoom != null);
     if (succeeded) {
       Navigator.pop(context);
       return;
@@ -2035,6 +2218,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             title: media.title,
             siteName: media.siteName,
             thumbnailUrl: media.posterUrl,
+            sourcePageUrl: media.pageUri,
           ),
         );
       });
@@ -2042,7 +2226,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   }
 
   bool _autoCommitProviderSelection(_WebEngine? engine) => switch (engine) {
-    null || _WebEngine.google || _WebEngine.duckDuckGo => false,
+    null || _WebEngine.google => false,
     _WebEngine.netflix || _WebEngine.primeVideo => false,
     _ => true,
   };
@@ -2062,6 +2246,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       title: media.title,
       siteName: media.siteName,
       thumbnailUrl: media.posterUrl,
+      sourcePageUrl: media.pageUri,
     );
   }
 
@@ -2083,6 +2268,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     String? title,
     String? siteName,
     String? thumbnailUrl,
+    Uri? sourcePageUrl,
   }) async {
     if (committing) return;
     if (origin == _DirectCommitOrigin.webPreviewButton &&
@@ -2104,6 +2290,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         sourceType: sourceType,
         title: synchronizedTitle,
         thumbnailUrl: thumbnailUrl,
+        sourcePageUrl: sourcePageUrl?.toString(),
       );
     } catch (error) {
       if (!mounted) return;
@@ -2112,12 +2299,9 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       return;
     }
     if (!mounted) return;
-    final succeeded = widget.targetRoomId == null
-        ? widget.controller.activeRoom != null
-        : widget.controller.watchState?.mediaId == uri.toString() ||
-              widget.controller.queue.any(
-                (item) => item.mediaId == uri.toString(),
-              );
+    final succeeded =
+        widget.controller.error == null &&
+        (widget.targetRoomId != null || widget.controller.activeRoom != null);
     if (succeeded) {
       Navigator.pop(context);
       return;
@@ -2160,6 +2344,8 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     } catch (_) {}
   }
 
+  // Browser-side complement to the central scraper for sites that reveal the
+  // concrete stream only after the user starts the real page player.
   Future<void> _installMediaDetector() async {
     try {
       await browser.runJavaScript('''
@@ -2181,6 +2367,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               value.includes('googlesyndication') ||
               value.includes('googleadservices') ||
               value.includes('adservice') ||
+              value.includes('flirtify.com') ||
               value.includes('/vast/') || value.includes('vast=') ||
               value.includes('/preroll') || value.includes('preroll=') ||
               value.includes('/advert') || value.includes('video-ad');
@@ -2222,7 +2409,8 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                 return mediaHost === 'xhamster.com' ||
                   mediaHost.endsWith('.xhamster.com') ||
                   mediaHost === 'xhcdn.com' || mediaHost.endsWith('.xhcdn.com') ||
-                  mediaHost === 'xhpingcdn.com' || mediaHost.endsWith('.xhpingcdn.com');
+                  mediaHost === 'xhpingcdn.com' || mediaHost.endsWith('.xhpingcdn.com') ||
+                  mediaHost === 'xhmediacdn.com' || mediaHost.endsWith('.xhmediacdn.com');
               }
               return true;
             } catch (_) {
@@ -2281,10 +2469,11 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               }
             });
           };
-          const bestCandidate = (extra = []) => [...extra, ...candidates]
+          const rankedCandidates = (extra = []) => [...extra, ...candidates]
             .filter((item) => isMedia(item.url) && isConcrete(item) &&
               !isAdUrl(item.url) && isAllowedContentCandidate(item.url))
-            .sort((a, b) => score(b) - score(a))[0];
+            .sort((a, b) => score(b) - score(a));
+          const bestCandidate = (extra = []) => rankedCandidates(extra)[0];
           performance.getEntriesByType('resource').forEach((entry) => remember(entry.name));
           rememberPageSources();
           try {
@@ -2308,14 +2497,17 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             return armedAt > 0 && Date.now() - armedAt < 120000 &&
               armedPage === location.href;
           };
+          let lastTrustedInteractionAt = 0;
+          document.addEventListener('pointerdown', (event) => {
+            if (event.isTrusted) lastTrustedInteractionAt = Date.now();
+          }, true);
           const isSearchResultsPage = () => {
             const host = location.hostname.toLowerCase();
             const google = host === 'google.com' || host.startsWith('www.google.') ||
               host.includes('.google.');
-            const duck = host === 'duckduckgo.com' || host.endsWith('.duckduckgo.com');
             // Search engines can render playable preview <video> nodes and use
             // several URL shapes. They are discovery surfaces, never sources.
-            return google || duck;
+            return google;
           };
           const arm = (video) => {
             video.dataset.letsCookArmedAt = String(Date.now());
@@ -2323,11 +2515,12 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             requestPageResolve();
           };
           let lastPageResolveAt = 0;
-          const requestPageResolve = () => {
+          const requestPageResolve = (iframe = false) => {
             if (isSearchResultsPage() || Date.now() - detectorReadyAt < 1000 ||
+                Date.now() - lastTrustedInteractionAt > 2000 ||
                 Date.now() - lastPageResolveAt < 1200) return;
             lastPageResolveAt = Date.now();
-            try { MediaIntent.postMessage(location.href); } catch (_) {}
+            try { MediaIntent.postMessage((iframe ? 'iframe:' : '') + location.href); } catch (_) {}
           };
           const visibleContentVideos = () => Array.from(document.querySelectorAll('video'))
             .filter((video) => {
@@ -2356,11 +2549,12 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             const playerControl = target.closest?.(
               'button, [role="button"], video, canvas, iframe, [class*="play"], [id*="play"], [class*="player"], [class*="video"]'
             );
-            if (!playerControl && !hint.includes('play')) return;
+            if (!playerControl) return;
             const controlRect = playerControl?.getBoundingClientRect?.();
-            if (playerControl?.matches?.('iframe, canvas') &&
-                (!controlRect || controlRect.width < 160 || controlRect.height < 90 ||
-                 playerControl.closest?.('.ad, [class*="advert"], [class*="preroll"], [id*="ad-container"], [data-ad]'))) {
+            const directPlayerSurface = playerControl.matches?.('video, iframe, canvas');
+            if ((!videos.length && !directPlayerSurface && !hint.includes('play')) ||
+                !controlRect || controlRect.width < 24 || controlRect.height < 24 ||
+                playerControl.closest?.('.ad, [class*="advert"], [class*="preroll"], [id*="ad-container"], [data-ad]')) {
               return;
             }
             // Custom players and cross-origin iframe players may never expose
@@ -2381,6 +2575,13 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             if (!event.isTrusted) return;
             armVideoAt(event.clientX, event.clientY, event.target);
           }, true);
+          // Android's native video controls can consume click before it reaches
+          // the document. Capture the same player-local intent on pointerdown;
+          // search pages and taps outside a visible paused player stay ignored.
+          document.addEventListener('pointerdown', (event) => {
+            if (!event.isTrusted) return;
+            armVideoAt(event.clientX, event.clientY, event.target);
+          }, true);
           // Clicks inside a cross-origin iframe do not bubble to the parent.
           // WebView moves focus to that iframe, so use the focus transition as
           // a playback intent and resolve the containing provider page.
@@ -2392,16 +2593,14 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               const src = String(frame.src || '').toLowerCase();
               if (rect.width < 160 || rect.height < 90 || isAdUrl(src) ||
                   frame.closest('.ad, [class*="advert"], [class*="preroll"], [id*="ad-container"], [data-ad]')) return;
-              requestPageResolve();
+              requestPageResolve(true);
             }, 0);
           }, true);
           const report = (video) => {
-            const rect = video.getBoundingClientRect();
-            const visiblePlayingVideo = !video.paused && rect.width >= 160 &&
-              rect.height >= 90 && video.readyState >= 2 &&
-              (!Number.isFinite(video.duration) || video.duration >= 10);
-            if (isSearchResultsPage() ||
-                (!wasExplicitlySelected(video) && !visiblePlayingVideo)) return;
+            // Autoplay, profile previews and landing-page hero players are not
+            // selections. Only the exact player armed by a trusted user click
+            // may create a room resource.
+            if (isSearchResultsPage() || !wasExplicitlySelected(video)) return;
             const url = video.currentSrc || video.src || '';
             const source = video.querySelector('source[src]');
             const resolved = url || (source ? source.src : '');
@@ -2414,7 +2613,8 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
             // The source used by the playing element is stronger evidence
             // than speculative URLs embedded in page scripts.
             remember(resolved, type, video.videoHeight ? String(video.videoHeight) : '', 250);
-            const chosen = bestCandidate();
+            const ranked = rankedCandidates();
+            const chosen = ranked[0];
             if (chosen) {
               video.dataset.letsCookArmedAt = '0';
               video.dataset.letsCookArmedPage = '';
@@ -2427,7 +2627,12 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                 title: document.title || '',
                 siteName: document.querySelector('meta[property="og:site_name"]')?.content || location.hostname,
                 posterUrl: video.poster || document.querySelector('meta[property="og:image"]')?.content || '',
-                pageUrl: location.href
+                pageUrl: location.href,
+                candidates: ranked.slice(0, 3).map((item) => ({
+                  url: item.url,
+                  type: item.type || '',
+                  quality: qualityHeight(item.url, item.quality)
+                }))
               }));
               return true;
             }
@@ -2451,8 +2656,7 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                 video.pause();
                 return;
               }
-              // Playback itself is the strongest possible user intent. This
-              // also works when a custom overlay swallows the original click.
+              if (!wasExplicitlySelected(video)) return;
               requestPageResolve();
               if (!report(video)) retryReport(video);
             };
@@ -2470,7 +2674,12 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
           // requestPageResolve is throttled and search pages are excluded.
           setInterval(() => {
             for (const video of visibleContentVideos()) {
-              if (!video.paused && !video.ended && video.readyState >= 2) {
+              if (wasExplicitlySelected(video) && !video.paused &&
+                  !video.ended && video.readyState >= 2) {
+                // A preroll can outlast the initial retries. Consume the real
+                // stream when it appears, even if the player keeps the same
+                // element and emits no new play event after the ad.
+                if (report(video)) break;
                 requestPageResolve();
                 break;
               }
@@ -2522,9 +2731,16 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
   }
 
   Future<void> _handleDetectedMedia(String message) async {
-    if (source != _DiscoverySource.web || committing || preparingWebVideo) {
+    if (source != _DiscoverySource.web || committing) {
       return;
     }
+    // A concrete stream captured while the page resolver is preparing is the
+    // successful result of that preparation, not a competing event. The old
+    // guard discarded exactly the MP4/HLS event that should finish the card.
+    if (preparingWebVideo && mounted) {
+      setState(() => preparingWebVideo = false);
+    }
+    final captureGeneration = webPageGeneration;
     try {
       final data = jsonDecode(message) as Map<String, dynamic>;
       final pageUri = Uri.tryParse((data['pageUrl'] as String? ?? '').trim());
@@ -2545,20 +2761,87 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
       final pageTitle = (data['title'] as String? ?? '').trim();
       final siteName = (data['siteName'] as String? ?? '').trim();
       final posterUrl = (data['posterUrl'] as String? ?? '').trim();
-      final quality = (data['quality'] as String? ?? '').trim();
+      final quality = (data['quality'] ?? '').toString().trim();
       final effectiveTitle = pageTitle.isNotEmpty
           ? pageTitle
           : selectedPageTitle?.trim() ?? '';
-      final uri = Uri.tryParse(url);
-      if (uri == null ||
-          uri.scheme != 'https' ||
-          hasUnresolvedMediaTemplate(uri)) {
+      final candidateData = <Map<String, dynamic>>[
+        {'url': url, 'type': type, 'quality': quality},
+        ...(data['candidates'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item)),
+      ];
+      final tested = <String>{};
+      final probeCandidates = <({Uri uri, String type, String quality})>[];
+      Uri? uri;
+      var selectedType = type;
+      var selectedQuality = quality;
+      for (final candidate in candidateData) {
+        final candidateUrl = (candidate['url'] ?? '').toString().trim();
+        if (!tested.add(candidateUrl)) continue;
+        final candidateUri = Uri.tryParse(candidateUrl);
+        if (candidateUri == null ||
+            candidateUri.scheme != 'https' ||
+            hasUnresolvedMediaTemplate(candidateUri) ||
+            _isKnownAdUri(candidateUri)) {
+          continue;
+        }
+        final candidateType = (candidate['type'] ?? '')
+            .toString()
+            .toLowerCase();
+        final sourceType =
+            candidateType.contains('mpegurl') ||
+                candidateUrl.toLowerCase().contains('.m3u8')
+            ? 'DIRECT_HLS'
+            : 'DIRECT_MP4';
+        probeCandidates.add((
+          uri: candidateUri,
+          type: sourceType,
+          quality: (candidate['quality'] ?? '').toString().trim(),
+        ));
+        if (probeCandidates.length == 3) break;
+      }
+      final probeResults = await Future.wait(
+        probeCandidates.map(
+          (candidate) async => (
+            candidate: candidate,
+            playable:
+                isProviderOwnedBrowserMedia(
+                  candidate.uri,
+                  sourcePage: pageUri,
+                ) ||
+                await probeDirectMedia(
+                  candidate.uri,
+                  sourceType: candidate.type,
+                  sourcePage: pageUri,
+                ),
+          ),
+        ),
+      );
+      // A stream belongs to the page that selected it. Navigation while a
+      // request is in flight must not publish an overlay for the old page.
+      if (!mounted || captureGeneration != webPageGeneration) return;
+      for (final result in probeResults) {
+        if (!result.playable) continue;
+        uri = result.candidate.uri;
+        selectedType = result.candidate.type;
+        selectedQuality = result.candidate.quality;
+        break;
+      }
+      if (uri == null) {
+        // Allow a fresh trusted player tap to retry if every transient signed
+        // URL failed validation. The old captured marker permanently paused
+        // the site player after a single CDN/network failure.
+        unawaited(_resetMediaDetectorCapture());
+      }
+      if (uri == null) {
         final pageUrl = (data['pageUrl'] as String? ?? '').trim();
         if (pageUrl.startsWith('https://')) {
           try {
             final resolved = await widget.controller.api.resolveWebMedia(
               pageUrl,
             );
+            if (!mounted || captureGeneration != webPageGeneration) return;
             final resolvedUrl = (resolved['sourceUrl'] as String? ?? '').trim();
             final resolvedUri = Uri.tryParse(resolvedUrl);
             final resolvedType = (resolved['sourceType'] as String? ?? '')
@@ -2567,15 +2850,20 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
                 resolvedUri.scheme == 'https' &&
                 !hasUnresolvedMediaTemplate(resolvedUri) &&
                 const {'DIRECT_MP4', 'DIRECT_HLS'}.contains(resolvedType)) {
-              if (!await probeDirectMedia(
+              final playable = await probeDirectMedia(
                 resolvedUri,
                 sourceType: resolvedType,
-              )) {
+                sourcePage: pageUri,
+              );
+              if (!mounted || captureGeneration != webPageGeneration) return;
+              if (!playable) {
+                unawaited(_resetMediaDetectorCapture());
                 return;
               }
               _showPendingWebMedia(
                 _PendingWebMedia(
                   uri: resolvedUri,
+                  pageUri: pageUri,
                   sourceType: resolvedType,
                   title:
                       (resolved['title'] as String?)?.trim().isNotEmpty == true
@@ -2594,6 +2882,8 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
               return;
             }
           } catch (error) {
+            if (!mounted || captureGeneration != webPageGeneration) return;
+            unawaited(_resetMediaDetectorCapture());
             if (mounted) setState(() => resolvingPage = false);
             _showMessage(error.toString());
             return;
@@ -2608,32 +2898,40 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
         return;
       }
       final sourceType =
-          type.contains('mpegurl') || url.toLowerCase().contains('.m3u8')
+          selectedType.contains('mpegurl') ||
+              uri.toString().toLowerCase().contains('.m3u8')
           ? 'DIRECT_HLS'
           : 'DIRECT_MP4';
-      if (!await probeDirectMedia(uri, sourceType: sourceType)) {
-        if (mounted) setState(() => resolvingPage = false);
-        _showMessage(
-          'That address was not a playable video stream. Keep the page open '
-          'and play the video again.',
-        );
-        return;
-      }
       _showPendingWebMedia(
         _PendingWebMedia(
           uri: uri,
+          pageUri: pageUri,
           sourceType: sourceType,
           title: effectiveTitle.isEmpty ? 'Selected web video' : effectiveTitle,
           siteName: siteName.isEmpty ? pageUri.host : siteName,
           selectedAt: DateTime.now(),
           posterUrl: posterUrl.isEmpty ? null : posterUrl,
-          quality: quality.isEmpty ? null : quality,
+          quality: selectedQuality.isEmpty ? null : selectedQuality,
         ),
       );
     } catch (_) {
+      if (!mounted || captureGeneration != webPageGeneration) return;
+      unawaited(_resetMediaDetectorCapture());
       if (mounted) setState(() => resolvingPage = false);
       _showMessage('This page does not expose a supported video stream.');
     }
+  }
+
+  Future<void> _resetMediaDetectorCapture() async {
+    try {
+      await browser.runJavaScript('''
+        document.querySelectorAll('video').forEach((video) => {
+          video.dataset.letsCookCaptured = 'false';
+          video.dataset.letsCookArmedAt = '0';
+          video.dataset.letsCookArmedPage = '';
+        });
+      ''');
+    } catch (_) {}
   }
 
   void _showMessage(String message) {
@@ -2651,6 +2949,8 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     final host = uri?.host.toLowerCase() ?? '';
     return host == 'doubleclick.net' ||
         host.endsWith('.doubleclick.net') ||
+        host == 'flirtify.com' ||
+        host.endsWith('.flirtify.com') ||
         host == 'googlesyndication.com' ||
         host.endsWith('.googlesyndication.com') ||
         host == 'googleadservices.com' ||
@@ -2684,13 +2984,6 @@ class _MediaDiscoveryScreenState extends State<MediaDiscoveryScreen> {
     }
     return null;
   }
-
-  static String? _storedYoutubeVideoId(String value) {
-    final trimmed = value.trim();
-    if (RegExp(r'^[\w-]{11}$').hasMatch(trimmed)) return trimmed;
-    final id = _youtubeVideoId(Uri.tryParse(trimmed));
-    return id != null && RegExp(r'^[\w-]{11}$').hasMatch(id) ? id : null;
-  }
 }
 
 class _DiscoveryHeader extends StatelessWidget {
@@ -2701,6 +2994,7 @@ class _DiscoveryHeader extends StatelessWidget {
     this.accent,
     this.onHistory,
     this.onLike,
+    this.onBrowserRecovery,
   });
   final String title;
   final VoidCallback onBack;
@@ -2708,6 +3002,7 @@ class _DiscoveryHeader extends StatelessWidget {
   final Color? accent;
   final VoidCallback? onHistory;
   final VoidCallback? onLike;
+  final VoidCallback? onBrowserRecovery;
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(8, 8, 14, 5),
@@ -2743,6 +3038,12 @@ class _DiscoveryHeader extends StatelessWidget {
             tooltip: 'History',
             onPressed: onHistory,
             icon: const Icon(Icons.history_rounded),
+          ),
+        if (onBrowserRecovery != null)
+          IconButton(
+            tooltip: 'Browser options',
+            onPressed: onBrowserRecovery,
+            icon: const Icon(Icons.more_vert_rounded),
           ),
         if (onLike != null)
           IconButton(

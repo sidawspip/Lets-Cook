@@ -32,6 +32,86 @@ void main() {
     );
   });
 
+  test('captured streams retain their page request context', () {
+    final page = Uri.parse('https://videos.example/watch/selected');
+    final stream = Uri.parse('https://cdn.example/video/360.mp4');
+
+    final headers = directMediaHttpHeaders(stream, sourcePage: page);
+
+    expect(headers['Referer'], page.toString());
+    expect(headers['Origin'], 'https://videos.example');
+    expect(headers['User-Agent'], contains('Android'));
+  });
+
+  test('xHamster media CDN uses the selected page as request context', () {
+    final page = Uri.parse(
+      'https://xhamster46.desi/videos/queen-marika-selected',
+    );
+    final stream = Uri.parse(
+      'https://video-nss.xhmediacdn.com/signed/media/master.m3u8',
+    );
+
+    final headers = directMediaHttpHeaders(stream, sourcePage: page);
+
+    expect(headers['Referer'], 'https://xhamster46.desi/');
+    expect(headers['Origin'], 'https://xhamster46.desi');
+    expect(isProviderOwnedBrowserMedia(stream, sourcePage: page), isTrue);
+    expect(
+      isProviderOwnedBrowserMedia(
+        Uri.parse('https://ads.example/video.mp4'),
+        sourcePage: page,
+      ),
+      isFalse,
+    );
+  });
+
+  test(
+    'resolved media keeps ordered fallbacks and source-specific headers',
+    () {
+      final primary = Uri.parse('https://cdn.example/master.m3u8');
+      final low = Uri.parse('https://cdn.example/240p.m3u8');
+      final media = ResolvedMedia(
+        primary,
+        httpHeaders: const {'Referer': 'https://page.example/'},
+        fallbackSources: [
+          ResolvedMediaSource(
+            low,
+            httpHeaders: const {'Referer': 'https://page.example/video'},
+          ),
+          ResolvedMediaSource(primary),
+        ],
+      );
+
+      expect(media.orderedSources.map((source) => source.uri), [primary, low]);
+      expect(
+        media.orderedSources.last.httpHeaders['Referer'],
+        'https://page.example/video',
+      );
+    },
+  );
+
+  test('normalizes backend source alternatives without unsafe headers', () {
+    final page = Uri.parse('https://xhamster46.desi/videos/selected');
+    final sources = resolvedMediaSourcesFromResponse([
+      {
+        'url': 'https://video-nss.xhmediacdn.com/video/720p.m3u8',
+        'sourceType': 'DIRECT_HLS',
+        'httpHeaders': {
+          'Referer': 'https://xhamster46.desi/',
+          'Cookie': 'must-not-be-forwarded',
+        },
+      },
+      {
+        'url': 'https://video-nss.xhmediacdn.com/video/_TPL_.mp4',
+        'sourceType': 'DIRECT_MP4',
+      },
+    ], sourcePage: page);
+
+    expect(sources, hasLength(1));
+    expect(sources.single.httpHeaders['Referer'], '${page.origin}/');
+    expect(sources.single.httpHeaders.containsKey('Cookie'), isFalse);
+  });
+
   test('normalizes public cloud share links without credentials', () {
     final drive = normalizePublicMediaLink(
       Uri.parse('https://drive.google.com/file/d/file-123/view'),

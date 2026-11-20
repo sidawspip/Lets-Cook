@@ -16,15 +16,18 @@ class NotificationStreamService {
   ) async {
     if (_client?.connected == true) return;
     disconnect();
-    final token = await api.accessToken();
+    final headers = <String, String>{};
     final base = Uri.parse(AppConfig.apiBaseUrl);
     _client = StompClient(
       config: StompConfig(
         url: base
             .replace(scheme: base.scheme == 'https' ? 'wss' : 'ws', path: '/ws')
             .toString(),
-        stompConnectHeaders: {'Authorization': 'Bearer $token'},
-        webSocketConnectHeaders: {'Authorization': 'Bearer $token'},
+        stompConnectHeaders: headers,
+        webSocketConnectHeaders: headers,
+        beforeConnect: () async {
+          headers['Authorization'] = 'Bearer ${await api.accessToken()}';
+        },
         reconnectDelay: const Duration(seconds: 2),
         heartbeatIncoming: const Duration(seconds: 10),
         heartbeatOutgoing: const Duration(seconds: 10),

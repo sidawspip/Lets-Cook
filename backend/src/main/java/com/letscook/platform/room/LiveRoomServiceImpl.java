@@ -79,7 +79,7 @@ public class LiveRoomServiceImpl implements LiveRoomService {
         cleanup(roomId);
         List<Participant> participants = repository.participants(roomId).stream()
                 .map(item -> new Participant(item.userId(), PublicIdentity.handle(item.username(), item.userId()),
-                        PublicIdentity.displayName(item.displayName(), item.username(), item.userId()), item.avatarUrl(), item.role(), item.canShareScreen(), item.canAddVideos(), item.canViewVideo(), item.videoAccessRequested()))
+                        PublicIdentity.displayName(item.displayName(), item.username(), item.userId()), item.avatarUrl(), item.role(), item.canShareScreen(), item.screenShareRequested(), item.canAddVideos(), item.canViewVideo(), item.videoAccessRequested()))
                 .toList();
         repository.rememberRecentPeople(roomId, viewerId);
         return participants;

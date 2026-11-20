@@ -69,6 +69,7 @@ public class WatchQueueServiceImpl implements WatchQueueService {
             UUID userId,
             String rawProvider,
             String rawMediaId,
+            String rawSourceUrl,
             String rawTitle,
             String thumbnailUrl,
             boolean personalQueueItem) {
@@ -78,11 +79,17 @@ public class WatchQueueServiceImpl implements WatchQueueService {
         }
         String provider = rawProvider.trim().toUpperCase(Locale.ROOT);
         String mediaId = rawMediaId.trim();
+        String sourceUrl = rawSourceUrl == null || rawSourceUrl.isBlank()
+                ? (provider.equals("YOUTUBE") ? null : mediaId)
+                : rawSourceUrl.trim();
         String title = rawTitle.trim();
         if (!QUEUE_PROVIDERS.contains(provider)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported provider");
         }
-        if (!provider.equals("YOUTUBE")) validateHttpsMedia(mediaId);
+        if (!provider.equals("YOUTUBE")) {
+            validateHttpsMedia(mediaId);
+            validateHttpsMedia(sourceUrl);
+        }
         if (repository.isCurrentMedia(roomId, provider, mediaId)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "This video is already playing");
         }
@@ -96,7 +103,7 @@ public class WatchQueueServiceImpl implements WatchQueueService {
         UUID id = UUID.randomUUID();
         int position = repository.nextPersonalPosition(roomId, userId);
         boolean inserted = repository.insert(
-                id, roomId, provider, mediaId, title, thumbnailUrl, userId, position,
+                id, roomId, provider, mediaId, sourceUrl, title, thumbnailUrl, userId, position,
                 personalQueueItem);
         UUID selected = inserted
                 ? id

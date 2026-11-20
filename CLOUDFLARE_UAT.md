@@ -7,7 +7,7 @@ Quick Tunnels provide a temporary, publicly trusted HTTPS URL without a Cloudfla
 From the project directory:
 
 ```powershell
-.\scripts\start-cloudflare-uat.ps1
+.\infra\scripts\dev\start-cloudflare-uat.ps1
 ```
 
 The script starts/builds Docker, starts `cloudflare/cloudflared`, detects the generated `https://...trycloudflare.com` URL, and replaces Keycloak's redirect/origin lists with the local URLs plus that new tunnel URL. It registers both the exact origin (needed by logout) and its `/*` path form. Previous Quick Tunnel URLs are removed automatically rather than accumulated. The script then prints the new shareable URL.
@@ -15,20 +15,20 @@ The script starts/builds Docker, starts `cloudflare/cloudflared`, detects the ge
 To protect the tunnel with one-time PIN authentication:
 
 ```powershell
-.\scripts\start-cloudflare-uat.ps1 -AllowedMail 'tester@example.com'
+.\infra\scripts\dev\start-cloudflare-uat.ps1 -AllowedMail 'tester@example.com'
 ```
 
 Multiple testers:
 
 ```powershell
-.\scripts\start-cloudflare-uat.ps1 -AllowedMail 'one@example.com','two@example.com'
+.\infra\scripts\dev\start-cloudflare-uat.ps1 -AllowedMail 'one@example.com','two@example.com'
 ```
 
 To start the tunnel and immediately open two independent Chrome Incognito
 sessions for two-user testing:
 
 ```powershell
-.\scripts\start-cloudflare-uat.ps1 -OpenIncognitoSessions 2
+.\infra\scripts\dev\start-cloudflare-uat.ps1 -OpenIncognitoSessions 2
 ```
 
 Each window receives a separate temporary browser profile, so it can stay
@@ -39,19 +39,19 @@ uses isolated profiles.
 To open test sessions later without restarting the tunnel:
 
 ```powershell
-.\scripts\open-incognito-test-sessions.ps1 -Sessions 2
+.\infra\scripts\dev\open-incognito-test-sessions.ps1 -Sessions 2
 ```
 
 Edge InPrivate is also supported:
 
 ```powershell
-.\scripts\open-incognito-test-sessions.ps1 -Sessions 2 -Browser Edge
+.\infra\scripts\dev\open-incognito-test-sessions.ps1 -Sessions 2 -Browser Edge
 ```
 
 ## Stop
 
 ```powershell
-.\scripts\stop-cloudflare-uat.ps1
+.\infra\scripts\dev\stop-cloudflare-uat.ps1
 ```
 
 The ordinary local application remains available at `http://localhost:4200`.
@@ -67,7 +67,7 @@ For Internet UAT, create a LiveKit Cloud project, copy its Project URL, API key,
 and API secret, then run:
 
 ```powershell
-.\scripts\configure-livekit-cloud.ps1
+.\backend\scripts\prod\configure-livekit-cloud.ps1
 ```
 
 The script prompts for the secret without displaying it and stores all three
@@ -82,7 +82,7 @@ LIVEKIT_API_SECRET=your-project-secret
 Start the Internet-ready flow with:
 
 ```powershell
-.\scripts\start-global-uat.ps1
+.\infra\scripts\dev\start-global-uat.ps1
 ```
 
 Unlike the ordinary launcher, this command fails before starting if the media
@@ -117,7 +117,7 @@ the host firewall:
 Then run:
 
 ```powershell
-.\scripts\start-self-hosted-internet-uat.ps1 -RouterPortsForwarded
+.\infra\scripts\dev\start-self-hosted-internet-uat.ps1 -RouterPortsForwarded
 ```
 
 This option requires a real public IP. It will not work behind ISP CGNAT,

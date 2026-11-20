@@ -7,20 +7,21 @@ import 'screens/login_screen.dart';
 import 'screens/watch_room_screen.dart';
 import 'state/watch_party_controller.dart';
 import 'theme/app_theme.dart';
+import 'widgets/wave_loader.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const LetsCookApp());
+  runApp(const XynkApp());
 }
 
-class LetsCookApp extends StatefulWidget {
-  const LetsCookApp({super.key});
+class XynkApp extends StatefulWidget {
+  const XynkApp({super.key});
 
   @override
-  State<LetsCookApp> createState() => _LetsCookAppState();
+  State<XynkApp> createState() => _XynkAppState();
 }
 
-class _LetsCookAppState extends State<LetsCookApp> with WidgetsBindingObserver {
+class _XynkAppState extends State<XynkApp> with WidgetsBindingObserver {
   late final WatchPartyController controller;
   final navigatorKey = GlobalKey<NavigatorState>();
   bool _openingNotificationChat = false;
@@ -76,7 +77,7 @@ class _LetsCookAppState extends State<LetsCookApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) => MaterialApp(
     navigatorKey: navigatorKey,
-    title: "Let's Cook",
+    title: "Xynk",
     debugShowCheckedModeBanner: false,
     theme: AppTheme.dark,
     home: AnimatedBuilder(
@@ -107,15 +108,11 @@ class _LaunchScreen extends StatelessWidget {
           LogoMark(size: 72),
           SizedBox(height: 18),
           Text(
-            "LET'S COOK",
+            "XYNK",
             style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 3),
           ),
           SizedBox(height: 22),
-          SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
+          WaveLoader(label: 'Loading your party', size: 52),
         ],
       ),
     ),

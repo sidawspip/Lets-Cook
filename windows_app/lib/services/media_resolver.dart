@@ -34,10 +34,31 @@ class ResolvedMedia {
 /// Browser-backed CDNs commonly require the same Referer/User-Agent that was
 /// used to discover the stream. Keep the rule narrowly scoped: ordinary
 /// public media URLs receive no synthetic headers.
-Map<String, String> directMediaHttpHeaders(Uri uri) {
+Map<String, String> directMediaHttpHeaders(Uri uri, {Uri? sourcePage}) {
   final host = uri.host.toLowerCase();
+  if ((host == 'xhmediacdn.com' || host.endsWith('.xhmediacdn.com')) &&
+      sourcePage != null &&
+      sourcePage.scheme == 'https') {
+    final origin = '${sourcePage.scheme}://${sourcePage.authority}';
+    return {
+      'Referer': '$origin/',
+      'Origin': origin,
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36',
+    };
+  }
   if (!host.endsWith('.xhpingcdn.com') && !host.endsWith('.xhcdn.com')) {
-    return const {};
+    if (sourcePage == null || sourcePage.scheme != 'https') return const {};
+    final origin = '${sourcePage.scheme}://${sourcePage.authority}';
+    return {
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 '
+          'Safari/537.36',
+      'Referer': sourcePage == uri ? '$origin/' : sourcePage.toString(),
+      'Origin': origin,
+    };
   }
 
   String? refererHost;
@@ -89,17 +110,45 @@ bool hasUnresolvedMediaTemplate(Uri uri) {
 }
 
 /// Checks that a browser-discovered URL is a real media response before it is
-/// offered to the room. A small range request avoids downloading the video.
-Future<bool> probeDirectMedia(Uri uri, {required String sourceType}) async {
+/// offered to the room. Match Rave's inexpensive validation order: HEAD first,
+/// then a small ranged GET when HEAD is explicitly unsupported.
+Future<bool> probeDirectMedia(
+  Uri uri, {
+  required String sourceType,
+  Uri? sourcePage,
+}) async {
   if (uri.scheme != 'https' || hasUnresolvedMediaTemplate(uri)) return false;
   final client = http.Client();
   try {
-    final request = http.Request('GET', uri)
-      ..headers.addAll(directMediaHttpHeaders(uri))
-      ..headers['Range'] = 'bytes=0-4095'
-      ..headers['Accept'] = sourceType == 'DIRECT_HLS'
+    final headers = <String, String>{
+      ...directMediaHttpHeaders(uri, sourcePage: sourcePage),
+      'Accept': sourceType == 'DIRECT_HLS'
           ? 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*'
-          : 'video/mp4,application/octet-stream,*/*';
+          : 'video/mp4,application/octet-stream,*/*',
+    };
+    final head = http.Request('HEAD', uri)..headers.addAll(headers);
+    final headResponse = await client
+        .send(head)
+        .timeout(const Duration(seconds: 10));
+    final headType = headResponse.headers['content-type']?.toLowerCase() ?? '';
+    if (headResponse.statusCode >= 200 && headResponse.statusCode < 300) {
+      if (sourceType == 'DIRECT_HLS' && headType.contains('mpegurl')) {
+        return true;
+      }
+      if (sourceType == 'DIRECT_MP4' &&
+          (headType.startsWith('video/') ||
+              (headType.contains('application/octet-stream') &&
+                  uri.path.toLowerCase().contains('.mp4')))) {
+        return true;
+      }
+    }
+    // Match Rave's ordering: a ranged request is a compatibility fallback
+    // for servers that reject HEAD, not a download attempt for every bad URL.
+    if (headResponse.statusCode != 405) return false;
+
+    final request = http.Request('GET', uri)
+      ..headers.addAll(headers)
+      ..headers['Range'] = 'bytes=0-4095';
     final response = await client
         .send(request)
         .timeout(const Duration(seconds: 10));
@@ -136,8 +185,19 @@ class CaptionCue {
   final Duration end;
 }
 
+typedef DirectMediaProbe =
+    Future<bool> Function(
+      Uri uri, {
+      required String sourceType,
+      Uri? sourcePage,
+    });
+
 class SplitMediaResolver implements MediaResolver {
+  SplitMediaResolver({DirectMediaProbe mediaProbe = probeDirectMedia})
+    : _mediaProbe = mediaProbe;
+
   final YoutubeExplode _youtube = YoutubeExplode();
+  final DirectMediaProbe _mediaProbe;
 
   @override
   Future<ResolvedMedia> resolve(
@@ -148,6 +208,7 @@ class SplitMediaResolver implements MediaResolver {
     if (provider != 'YOUTUBE') {
       final parsedUri = Uri.tryParse(state.sourceUrl ?? state.mediaId);
       final uri = parsedUri;
+      final sourcePage = Uri.tryParse(state.mediaId);
       if (uri == null || uri.scheme != 'https') {
         throw const FormatException(
           'This provider did not return a playable HTTPS media URL.',
@@ -161,20 +222,43 @@ class SplitMediaResolver implements MediaResolver {
       }
       final hls =
           provider == 'DIRECT_HLS' || uri.path.toLowerCase().endsWith('.m3u8');
-      if (hls) {
-        return _resolveHls(uri, quality);
+      final sourceType = hls ? 'DIRECT_HLS' : 'DIRECT_MP4';
+      if (!await _mediaProbe(
+        uri,
+        sourceType: sourceType,
+        sourcePage: sourcePage,
+      )) {
+        throw const FormatException(
+          'The selected address returned a webpage instead of playable video. '
+          'Start the video in Web and select it again so its real stream can '
+          'be captured.',
+        );
       }
-      return ResolvedMedia(uri, httpHeaders: directMediaHttpHeaders(uri));
+      if (hls) {
+        return _resolveHls(uri, quality, sourcePage: sourcePage);
+      }
+      return ResolvedMedia(
+        uri,
+        httpHeaders: directMediaHttpHeaders(uri, sourcePage: sourcePage),
+      );
     }
     final titleFuture = _youtubeTitle(state.mediaId);
     final captionsFuture = _youtubeCaptionLanguages(state.mediaId);
-    final manifest = await _youtube.videos.streamsClient
+    var manifest = await _youtube.videos.streamsClient
         .getManifest(state.mediaId)
         .timeout(
-          const Duration(seconds: 20),
-          onTimeout: () => throw TimeoutException(
-            'YouTube took too long to provide a playable stream.',
-          ),
+          const Duration(seconds: 12),
+          onTimeout: () async {
+            await Future<void>.delayed(const Duration(milliseconds: 350));
+            return _youtube.videos.streamsClient
+                .getManifest(state.mediaId)
+                .timeout(
+                  const Duration(seconds: 15),
+                  onTimeout: () => throw TimeoutException(
+                    'YouTube took too long to provide a playable stream.',
+                  ),
+                );
+          },
         );
     final title = await titleFuture;
     final captionLanguages = await captionsFuture;
@@ -186,7 +270,10 @@ class SplitMediaResolver implements MediaResolver {
         streams.map((stream) => stream.qualityLabel).toSet().toList()
           ..sort((a, b) => _height(a).compareTo(_height(b)));
     final selected = quality == 'auto'
-        ? streams.last
+        ? streams.lastWhere(
+            (stream) => _height(stream.qualityLabel) <= 360,
+            orElse: () => streams.first,
+          )
         : streams.lastWhere(
             (stream) => stream.qualityLabel == quality,
             orElse: () => streams.last,
@@ -230,8 +317,12 @@ class SplitMediaResolver implements MediaResolver {
     }
   }
 
-  Future<ResolvedMedia> _resolveHls(Uri masterUri, String quality) async {
-    final headers = directMediaHttpHeaders(masterUri);
+  Future<ResolvedMedia> _resolveHls(
+    Uri masterUri,
+    String quality, {
+    Uri? sourcePage,
+  }) async {
+    final headers = directMediaHttpHeaders(masterUri, sourcePage: sourcePage);
     try {
       final response = await http
           .get(masterUri, headers: headers)

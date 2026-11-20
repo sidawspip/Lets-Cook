@@ -25,7 +25,13 @@ public class CurrentUserRepository {
             String avatarUrl) {
         return jdbc.sql("""
                         INSERT INTO app_users (id, identity_subject, username, display_name, email, avatar_url)
-                        VALUES (:id, :subject, :username, :displayName, :email, :avatarUrl)
+                        VALUES (:id, :subject,
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM app_users
+                                WHERE username = :username AND identity_subject <> :subject
+                            ) THEN LEFT(:username, 63) || '-' || LEFT(:subject, 12)
+                            ELSE :username END,
+                            :displayName, :email, :avatarUrl)
                         ON CONFLICT (identity_subject) DO UPDATE SET
                             email = COALESCE(EXCLUDED.email, app_users.email),
                             avatar_url = COALESCE(app_users.avatar_url, EXCLUDED.avatar_url),

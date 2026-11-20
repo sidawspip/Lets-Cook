@@ -1,7 +1,7 @@
 {
-  "realm": "lets-cook",
+  "realm": "xynk",
   "enabled": true,
-  "displayName": "Let's Cook",
+  "displayName": "Xynk",
   "registrationAllowed": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
@@ -9,16 +9,16 @@
   "clients": [
     {
       "clientId": "lets-cook-web",
-      "name": "Let's Cook Web",
+      "name": "Xynk Web",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["https://letscook.world", "https://letscook.world/*", "http://localhost:4200", "http://localhost:4200/*", "http://10.0.2.2:4200", "http://10.0.2.2:4200/*", "http://192.168.0.3:4200", "http://192.168.0.3:4200/*"],
-      "webOrigins": ["https://letscook.world", "http://localhost:4200", "http://10.0.2.2:4200", "http://192.168.0.3:4200"],
+      "redirectUris": ["https://xynk.in", "https://xynk.in/*", "https://www.xynk.in", "https://www.xynk.in/*", "http://localhost:4200", "http://localhost:4200/*", "http://10.0.2.2:4200", "http://10.0.2.2:4200/*", "http://192.168.0.3:4200", "http://192.168.0.3:4200/*"],
+      "webOrigins": ["https://xynk.in", "https://www.xynk.in", "http://localhost:4200", "http://10.0.2.2:4200", "http://192.168.0.3:4200"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "https://letscook.world##https://letscook.world/*##http://localhost:4200##http://localhost:4200/*##http://10.0.2.2:4200##http://10.0.2.2:4200/*##http://192.168.0.3:4200##http://192.168.0.3:4200/*"
+        "post.logout.redirect.uris": "https://xynk.in##https://xynk.in/*##https://www.xynk.in##https://www.xynk.in/*##http://localhost:4200##http://localhost:4200/*##http://10.0.2.2:4200##http://10.0.2.2:4200/*##http://192.168.0.3:4200##http://192.168.0.3:4200/*"
       },
       "protocolMappers": [
         {
@@ -39,12 +39,12 @@
     },
     {
       "clientId": "lets-cook-mobile",
-      "name": "Let's Cook Mobile",
+      "name": "Xynk Mobile",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["world.letscook.app:/oauthredirect"],
+      "redirectUris": ["world.letscook.app:/oauthredirect", "http://127.0.0.1:42817/oauth/callback"],
       "webOrigins": [],
       "attributes": {
         "pkce.code.challenge.method": "S256"
@@ -68,7 +68,7 @@
     },
     {
       "clientId": "lets-cook-native-google",
-      "name": "Let's Cook Native Google Broker",
+      "name": "Xynk Native Google Broker",
       "enabled": true,
       "publicClient": false,
       "secret": "${KEYCLOAK_NATIVE_AUTH_CLIENT_SECRET}",
@@ -113,6 +113,7 @@
         "defaultScope": "openid profile email",
         "syncMode": "IMPORT",
         "useJwksUrl": "true",
+        "prompt": "select_account",
         "issuer": "https://accounts.google.com",
         "jwksUrl": "https://www.googleapis.com/oauth2/v3/certs",
         "jwtAuthorizationGrantEnabled": "true",

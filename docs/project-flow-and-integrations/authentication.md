@@ -40,10 +40,10 @@ sequenceDiagram
 | JWT validation and issuer allowlist | `backend/src/main/java/com/letscook/platform/config/SecurityConfig.java` | Validates bearer JWTs and configures authorization rules |
 | Current user/profile mapping | `backend/src/main/java/com/letscook/platform/common/CurrentUserService.java`, `backend/src/main/java/com/letscook/platform/common/ProfileController.java` | Maps verified token claims to the local user profile and profile endpoints |
 | JWK URL, issuer, proxy headers | `backend/src/main/resources/application.yml`, `compose.yaml` | Sets service-side issuer/JWK and forwarded-header behavior |
-| Temporary public UAT redirects | `scripts/start-cloudflare-uat.ps1` | Rewrites the browser client's redirect/origin arrays for a Quick Tunnel URL |
-| Social identity providers | `scripts/enable-google-login.ps1`, `scripts/enable-x-login.ps1` | Configure Google and X in Keycloak; credentials belong in protected configuration, not source |
-| Mobile OIDC client | `scripts/ensure-mobile-oidc-client.ps1`, `infra/keycloak/realm-export.json` | Registers the Android PKCE callback `world.letscook.app:/oauthredirect` |
-| UAT account provisioning and login checks | `scripts/seed-uat-users.ps1`, `scripts/run-uat.ps1` | Creates local test users and runs auth/API/media UAT flows |
+| Temporary public UAT redirects | `infra/scripts/dev/start-cloudflare-uat.ps1` | Rewrites the browser client's redirect/origin arrays for a Quick Tunnel URL |
+| Social identity providers | `infra/scripts/prod/enable-google-login.ps1`, `infra/scripts/prod/enable-x-login.ps1` | Configure Google and X in Keycloak; credentials belong in protected configuration, not source |
+| Mobile OIDC client | `infra/scripts/prod/ensure-mobile-oidc-client.ps1`, `infra/keycloak/realm-export.json` | Registers the Android PKCE callback `world.letscook.app:/oauthredirect` |
+| UAT account provisioning and login checks | `backend/scripts/dev/seed-uat-users.ps1`, `backend/scripts/dev/run-uat.ps1` | Creates local test users and runs auth/API/media UAT flows |
 
 ## Setup sequence
 
@@ -59,14 +59,14 @@ sequenceDiagram
 Create OAuth applications with Google and X, register the callback URLs printed by these commands, and then configure Keycloak without committing the credentials:
 
 ```powershell
-.\scripts\ensure-mobile-oidc-client.ps1
-.\scripts\enable-google-login.ps1 -ClientId '<google-client-id>' -ClientSecret '<google-secret>'
-.\scripts\save-x-oauth-credential.ps1 -Kind ClientId
-.\scripts\save-x-oauth-credential.ps1 -Kind ClientSecret
-.\scripts\enable-x-login.ps1
+.\infra\scripts\prod\ensure-mobile-oidc-client.ps1
+.\infra\scripts\prod\enable-google-login.ps1 -ClientId '<google-client-id>' -ClientSecret '<google-secret>'
+.\infra\scripts\prod\save-x-oauth-credential.ps1 -Kind ClientId
+.\infra\scripts\prod\save-x-oauth-credential.ps1 -Kind ClientSecret
+.\infra\scripts\prod\enable-x-login.ps1
 ```
 
-Google uses its OAuth client ID/secret. X uses a confidential OAuth 2.0 Web App with PKCE and the production callback `https://letscook.world/realms/lets-cook/broker/x/endpoint`. The X app needs `users.read` and `tweet.read`; current Keycloak versions require an eligible X API v2 plan for the user-info call. Use the canonical public Keycloak URL when configuring production so the generated broker callback URLs are public HTTPS URLs.
+Google uses its OAuth client ID/secret. X uses a confidential OAuth 2.0 Web App with PKCE and the production callback `https://xynk.in/realms/xynk/broker/x/endpoint`. The X app needs `users.read` and `tweet.read`; current Keycloak versions require an eligible X API v2 plan for the user-info call. Use the canonical public Keycloak URL when configuring production so the generated broker callback URLs are public HTTPS URLs.
 
 Google uses a provider-specific first-login flow: create a user when the verified email is new, or automatically link the Google identity when it matches an existing verified Keycloak email. This deliberately trusts Google's verified-email assertion and must not be assigned to an untrusted provider. The native Android exchange enforces the same verified-email rule.
 

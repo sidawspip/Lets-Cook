@@ -25,7 +25,7 @@ class WatchSyncService {
     if (_roomId == roomId && _client?.connected == true) return;
     disconnect();
     _roomId = roomId;
-    final token = await api.accessToken();
+    final headers = <String, String>{};
     final base = Uri.parse(AppConfig.apiBaseUrl);
     final url = base
         .replace(scheme: base.scheme == 'https' ? 'wss' : 'ws', path: '/ws')
@@ -33,8 +33,11 @@ class WatchSyncService {
     _client = StompClient(
       config: StompConfig(
         url: url,
-        stompConnectHeaders: {'Authorization': 'Bearer $token'},
-        webSocketConnectHeaders: {'Authorization': 'Bearer $token'},
+        stompConnectHeaders: headers,
+        webSocketConnectHeaders: headers,
+        beforeConnect: () async {
+          headers['Authorization'] = 'Bearer ${await api.accessToken()}';
+        },
         reconnectDelay: const Duration(seconds: 2),
         heartbeatIncoming: const Duration(seconds: 10),
         heartbeatOutgoing: const Duration(seconds: 10),

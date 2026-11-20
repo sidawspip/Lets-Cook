@@ -16,6 +16,7 @@ public final class LiveRoomModels {
             String avatarUrl,
             RoomRole role,
             boolean canShareScreen,
+            boolean screenShareRequested,
             boolean canAddVideos,
             boolean canViewVideo,
             boolean videoAccessRequested) {}

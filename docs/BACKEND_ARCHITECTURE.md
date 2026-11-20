@@ -235,13 +235,13 @@ docker compose up -d --force-recreate backend
 Run the two-account core integration suite:
 
 ```powershell
-.\scripts\test-core-two-accounts.ps1
+.\backend\scripts\dev\test-core-two-accounts.ps1
 ```
 
 Run the targeted STOMP invitation test:
 
 ```powershell
-node .\scripts\test-notification-push.mjs
+node .\backend\scripts\dev\test-notification-push.mjs
 ```
 
 Useful diagnostics:

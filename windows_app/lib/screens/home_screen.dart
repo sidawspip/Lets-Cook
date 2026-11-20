@@ -31,6 +31,23 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  Timer? _roomsRefreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _roomsRefreshTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => unawaited(widget.controller.refreshHomeRooms()),
+    );
+  }
+
+  @override
+  void dispose() {
+    _roomsRefreshTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     extendBody: true,
@@ -159,6 +176,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+    if (mounted) await widget.controller.refreshHomeRooms();
   }
 }
 
@@ -242,7 +260,7 @@ class _Header extends StatelessWidget {
         ),
         const Expanded(
           child: Text(
-            "LET'S COOK",
+            "XYNK",
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: 'sans-serif-condensed',
@@ -815,8 +833,8 @@ class _RoomsPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final visibleRooms = controller.visibleRooms;
-    final invited = visibleRooms.take(2).toList();
-    final publicRooms = visibleRooms.skip(2).toList();
+    final invited = visibleRooms.where((room) => room.joined).toList();
+    final publicRooms = visibleRooms.where((room) => !room.joined).toList();
     return RefreshIndicator(
       onRefresh: controller.resumeConnections,
       child: ListView(
@@ -1029,7 +1047,7 @@ class _ConnectionBannerState extends State<_ConnectionBanner> {
                     ? const Padding(
                         padding: EdgeInsets.only(top: 12),
                         child: Text(
-                          'Lets Cook keeps your room connected while this window is open. '
+                          'Xynk keeps your room connected while this window is open. '
                           'If the connection is interrupted, it automatically rejoins and '
                           'syncs the video when you return.',
                           style: TextStyle(
@@ -1143,6 +1161,18 @@ class _RoomCardState extends State<_RoomCard> {
                               height: 1.15,
                             ),
                           ),
+                          if (room.ownerName case final owner?) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              'Host: $owner',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Color(0xCCFFFFFF),
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
                           const Spacer(),
                           Row(
                             children: [
@@ -3124,6 +3154,7 @@ class _HistoryStrip extends StatelessWidget {
             width: 178,
             child: InkWell(
               borderRadius: BorderRadius.circular(14),
+              onTap: () => _playLibraryItem(controller, item),
               onLongPress: () => _showHistoryActions(context, controller, item),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -3203,6 +3234,7 @@ class _HistoryStrip extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
+                  _ProviderCaption(provider: item.provider),
                 ],
               ),
             ),
@@ -3273,28 +3305,32 @@ class _GalleryStrip extends StatelessWidget {
         final item = controller.gallery[index];
         return SizedBox(
           width: 168,
-          child: ClipRRect(
+          child: InkWell(
+            onTap: () => _playLibraryItem(controller, item),
             borderRadius: BorderRadius.circular(14),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                MediaPreview(
-                  mediaId: item.mediaId,
-                  provider: item.provider,
-                  thumbnailUrl: item.thumbnailUrl,
-                  contentLabel: item.title,
-                  sensitive: item.sensitive,
-                ),
-                Positioned(
-                  right: 3,
-                  top: 3,
-                  child: IconButton(
-                    tooltip: 'Remove from gallery',
-                    onPressed: () => controller.toggleGallery(item),
-                    icon: const Icon(Icons.bookmark_remove_rounded),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  MediaPreview(
+                    mediaId: item.mediaId,
+                    provider: item.provider,
+                    thumbnailUrl: item.thumbnailUrl,
+                    contentLabel: item.title,
+                    sensitive: item.sensitive,
                   ),
-                ),
-              ],
+                  Positioned(
+                    right: 3,
+                    top: 3,
+                    child: IconButton(
+                      tooltip: 'Remove from gallery',
+                      onPressed: () => controller.toggleGallery(item),
+                      icon: const Icon(Icons.bookmark_remove_rounded),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -3379,6 +3415,7 @@ class _LikedVideosStrip extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
+                _ProviderCaption(provider: item.provider),
               ],
             ),
           ),
@@ -3391,26 +3428,57 @@ class _LikedVideosStrip extends StatelessWidget {
 Future<void> _playLibraryItem(
   WatchPartyController controller,
   ViewingActivity item,
-) async {
-  if (item.provider == 'YOUTUBE') {
-    await controller.selectYoutubeVideo(
-      VideoSuggestion(
-        videoId: item.mediaId,
-        title: item.title,
-        channelTitle: 'YouTube',
-        thumbnailUrl: item.thumbnailUrl,
-        provider: item.provider,
-      ),
-    );
-    return;
-  }
-  await controller.selectProviderMedia(
-    provider: item.provider,
-    mediaId: item.mediaId,
-    title: item.title,
-    thumbnailUrl: item.thumbnailUrl,
+) =>
+    controller.selectLibraryItem(item, targetRoomId: controller.activeRoom?.id);
+
+class _ProviderCaption extends StatelessWidget {
+  const _ProviderCaption({required this.provider});
+
+  final String provider;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 2),
+    child: Row(
+      children: [
+        const Icon(Icons.play_circle_outline_rounded, size: 11),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            _libraryProviderLabel(provider),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xBFFFFFFF),
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    ),
   );
 }
+
+String _libraryProviderLabel(String value) =>
+    switch (value.trim().toUpperCase()) {
+      'YOUTUBE' => 'YouTube',
+      'VIMEO' => 'Vimeo',
+      'TWITCH' => 'Twitch',
+      'GOOGLE_DRIVE' => 'Google Drive',
+      'DROPBOX' => 'Dropbox',
+      'ONEDRIVE' => 'OneDrive',
+      'INTERNET_ARCHIVE' => 'Internet Archive',
+      'DIRECT_MP4' => 'Direct video',
+      'DIRECT_HLS' => 'Live stream',
+      'PRIME_VIDEO' => 'Prime Video',
+      final provider =>
+        provider
+            .split('_')
+            .where((part) => part.isNotEmpty)
+            .map((part) => '${part[0]}${part.substring(1).toLowerCase()}')
+            .join(' '),
+    };
 
 bool _looksSensitive(String value) {
   final text = value.toLowerCase();
@@ -3488,7 +3556,7 @@ class _SourcePicker extends StatelessWidget {
                   ),
                   const Expanded(
                     child: Text(
-                      "LET'S COOK",
+                      "XYNK",
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 24,

@@ -10,6 +10,35 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('history preserves playable source separately from its page identity', () async {
+    final api = _FakeLetsCookApi();
+    final controller = _FlowTestController(api);
+    addTearDown(controller.dispose);
+    await controller.selectDirectVideo('https://cdn.example/stream.mp4',
+        sourceType: 'DIRECT_MP4', sourcePageUrl: 'https://site.example/watch/1',
+        title: 'Saved video');
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.history.single.mediaId, 'https://site.example/watch/1');
+    expect(controller.history.single.sourceUrl, 'https://cdn.example/stream.mp4');
+    expect(controller.history.single.sourceType, 'DIRECT_MP4');
+    expect(ViewingActivity.fromJson(controller.history.single.toJson()).sourceUrl,
+        'https://cdn.example/stream.mp4');
+  });
+
+  test('legacy web history refreshes into direct playback without provider browser', () async {
+    final api = _FakeLetsCookApi();
+    final controller = _FlowTestController(api);
+    addTearDown(controller.dispose);
+    await controller.selectLibraryItem(ViewingActivity(
+      mediaId: 'https://site.example/watch/1', title: 'Legacy video',
+      provider: 'WEB', thumbnailUrl: '', watchedAt: DateTime(2026), sensitive: false));
+    expect(api.resolveCalls, 1);
+    expect(api.items.single.sourceUrl, 'https://cdn.example/refreshed.mp4');
+    expect(api.items.single.mediaId, 'https://site.example/watch/1');
+    expect(api.items.single.provider, 'DIRECT_MP4');
+    expect(api.playCalls, 1);
+  });
+
   test('starts signed out without preview or seeded room data', () {
     final controller = WatchPartyController();
     addTearDown(controller.dispose);
@@ -115,7 +144,9 @@ void main() {
 
   test('host starts YouTube immediately when the room is idle', () async {
     final api = _FakeLetsCookApi();
-    final controller = _FlowTestController(api)..activeRoom = _room;
+    final controller = _FlowTestController(api)
+      ..activeRoom = _room
+      ..canAddToQueue = true;
     addTearDown(controller.dispose);
 
     await controller.selectYoutubeVideo(
@@ -132,7 +163,9 @@ void main() {
     'host starts provider media immediately when the room is idle',
     () async {
       final api = _FakeLetsCookApi();
-      final controller = _FlowTestController(api)..activeRoom = _room;
+      final controller = _FlowTestController(api)
+        ..activeRoom = _room
+        ..canAddToQueue = true;
       addTearDown(controller.dispose);
 
       await controller.selectProviderMedia(
@@ -150,7 +183,9 @@ void main() {
 
   test('host starts direct media immediately when the room is idle', () async {
     final api = _FakeLetsCookApi();
-    final controller = _FlowTestController(api)..activeRoom = _room;
+    final controller = _FlowTestController(api)
+      ..activeRoom = _room
+      ..canAddToQueue = true;
     addTearDown(controller.dispose);
 
     await controller.selectDirectVideo(
@@ -162,6 +197,25 @@ void main() {
     expect(api.playCalls, 1);
     expect(controller.watchState?.mediaId, 'https://example.test/idle.mp4');
     expect(controller.shelfOpen, isFalse);
+  });
+
+  test('web selection keeps the page identity and queues resolved stream', () async {
+    final api = _FakeLetsCookApi();
+    final controller = _FlowTestController(api)..activeRoom = _room;
+    addTearDown(controller.dispose);
+
+    await controller.selectDirectVideo(
+      'https://cdn.example.test/signed/video.mp4?expires=1',
+      sourcePageUrl: 'https://example.test/watch/video',
+      targetRoomId: _room.id,
+      title: 'Web video',
+    );
+
+    expect(api.items.single.mediaId, 'https://example.test/watch/video');
+    expect(
+      api.items.single.sourceUrl,
+      'https://cdn.example.test/signed/video.mp4?expires=1',
+    );
   });
 
   test('queue vote is single-choice, ranked, and toggles off', () async {
@@ -290,6 +344,22 @@ class _FakeLetsCookApi extends LetsCookApi {
   int shareCalls = 0;
   RoomWatchState? currentWatch;
   List<QueueItem> items = [];
+  int resolveCalls = 0;
+
+  @override
+  Future<Map<String, dynamic>> resolveWebMedia(String pageUrl) async {
+    resolveCalls++;
+    return {'sourceUrl': 'https://cdn.example/refreshed.mp4', 'sourceType': 'DIRECT_MP4'};
+  }
+
+  @override
+  Future<Map<String, dynamic>> recordMedia({
+    required String mediaId, required String provider, required String title,
+    String? thumbnailUrl, String? sourceUrl, String? sourceType, int watchSeconds = 0,
+  }) async => {
+    'mediaId': mediaId, 'provider': provider, 'title': title,
+    'thumbnailUrl': thumbnailUrl, 'sourceUrl': sourceUrl, 'sourceType': sourceType,
+  };
 
   @override
   Future<PartyRoom> createRoom(String name) async {
@@ -342,12 +412,14 @@ class _FakeLetsCookApi extends LetsCookApi {
   Future<QueueItem> addDirectToQueue(
     String roomId,
     String provider,
-    String url, {
+    String mediaId, {
+    String? sourceUrl,
     String? title,
     String? thumbnailUrl,
   }) async => _addMedia(
     provider: provider,
-    mediaId: url,
+    mediaId: mediaId,
+    sourceUrl: sourceUrl,
     title: title ?? 'Direct video',
     thumbnailUrl: thumbnailUrl,
   );
@@ -356,6 +428,7 @@ class _FakeLetsCookApi extends LetsCookApi {
     required String provider,
     required String mediaId,
     required String title,
+    String? sourceUrl,
     String? thumbnailUrl,
   }) {
     addCalls++;
@@ -363,6 +436,7 @@ class _FakeLetsCookApi extends LetsCookApi {
       id: 'queue-$mediaId',
       provider: provider,
       mediaId: mediaId,
+      sourceUrl: sourceUrl,
       title: title,
       addedBy: 'member-1',
       addedByName: 'Member',

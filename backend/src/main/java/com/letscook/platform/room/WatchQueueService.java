@@ -19,6 +19,7 @@ public interface WatchQueueService {
             UUID userId,
             String provider,
             String mediaId,
+            String sourceUrl,
             String title,
             String thumbnailUrl,
             boolean personalQueueItem);

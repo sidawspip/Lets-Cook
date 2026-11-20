@@ -3,20 +3,22 @@ class AppConfig {
 
   static const apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://letscook.world/api',
+    defaultValue: 'https://xynk.in/api',
   );
   static const authBaseUrl = String.fromEnvironment(
     'AUTH_BASE_URL',
-    defaultValue: 'https://letscook.world',
+    defaultValue: 'https://xynk.in',
   );
   static const appBaseUrl = String.fromEnvironment(
     'APP_BASE_URL',
-    defaultValue: 'https://letscook.world',
+    defaultValue: 'https://xynk.in',
   );
-  static const realm = 'lets-cook';
+  static const realm = 'xynk';
   static const clientId = 'lets-cook-mobile';
   static const registrationClientId = 'lets-cook-web';
   static const oauthRedirectUrl = 'world.letscook.app:/oauthredirect';
+  static const desktopOauthRedirectUrl =
+      'http://127.0.0.1:42817/oauth/callback';
   static const googleWebClientId =
       '964609721877-vne7f4q1uu6lb7oalj55h67irqm8hva5.apps.googleusercontent.com';
   static String get oidcDiscoveryUrl =>

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:fvp/fvp.dart' as fvp;
 import 'package:window_manager/window_manager.dart';
 
 import 'screens/home_screen.dart';
@@ -8,9 +9,18 @@ import 'screens/login_screen.dart';
 import 'screens/watch_room_screen.dart';
 import 'state/watch_party_controller.dart';
 import 'theme/app_theme.dart';
+import 'widgets/wave_loader.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Windows Media Foundation rejects YouTube's valid extensionless signed MP4
+  // URLs. FVP keeps the video_player API used throughout the app while using
+  // an FFmpeg-backed desktop player that can inspect and decode those streams.
+  fvp.registerWith(
+    options: {
+      'platforms': ['windows'],
+    },
+  );
   await windowManager.ensureInitialized();
   await windowManager.setMinimumSize(const Size(960, 640));
   unawaited(
@@ -19,7 +29,7 @@ Future<void> main() async {
         size: Size(1280, 800),
         center: true,
         minimumSize: Size(960, 640),
-        title: "Let's Cook",
+        title: "Xynk",
       ),
       () async {
         await windowManager.show();
@@ -27,17 +37,17 @@ Future<void> main() async {
       },
     ),
   );
-  runApp(const LetsCookApp());
+  runApp(const XynkApp());
 }
 
-class LetsCookApp extends StatefulWidget {
-  const LetsCookApp({super.key});
+class XynkApp extends StatefulWidget {
+  const XynkApp({super.key});
 
   @override
-  State<LetsCookApp> createState() => _LetsCookAppState();
+  State<XynkApp> createState() => _XynkAppState();
 }
 
-class _LetsCookAppState extends State<LetsCookApp> with WidgetsBindingObserver {
+class _XynkAppState extends State<XynkApp> with WidgetsBindingObserver {
   late final WatchPartyController controller;
   final navigatorKey = GlobalKey<NavigatorState>();
   bool _openingNotificationChat = false;
@@ -93,7 +103,7 @@ class _LetsCookAppState extends State<LetsCookApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) => MaterialApp(
     navigatorKey: navigatorKey,
-    title: "Let's Cook",
+    title: "Xynk",
     debugShowCheckedModeBanner: false,
     theme: AppTheme.dark,
     home: AnimatedBuilder(
@@ -124,15 +134,11 @@ class _LaunchScreen extends StatelessWidget {
           LogoMark(size: 72),
           SizedBox(height: 18),
           Text(
-            "LET'S COOK",
+            "XYNK",
             style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 3),
           ),
           SizedBox(height: 22),
-          SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
+          WaveLoader(label: 'Loading your party', size: 52),
         ],
       ),
     ),
