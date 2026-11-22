@@ -36,6 +36,9 @@ import org.json.JSONObject
 /** Device-local protected playback. The room transports episode identity and state only. */
 @OptIn(UnstableApi::class)
 internal class CrunchyrollRoomPlayer private constructor(private val activity: Activity) : PlatformView {
+    // Initialize WebView's cookie provider on the platform/UI thread before
+    // the authentication executor accesses it during restored-room playback.
+    private val cookieManager = CookieManager.getInstance()
     private val surface = SurfaceView(activity)
     private val view = FrameLayout(activity).apply {
         addView(surface, FrameLayout.LayoutParams(-1, -1))
@@ -64,7 +67,7 @@ internal class CrunchyrollRoomPlayer private constructor(private val activity: A
         if (active === this) active = null
     }
 
-    private fun cookies(): String = CookieManager.getInstance()
+    private fun cookies(): String = cookieManager
         .getCookie("https://www.crunchyroll.com").orEmpty()
 
     private fun execute(url: String, method: String = "GET", headers: Map<String, String> = emptyMap(), body: ByteArray? = null): String {

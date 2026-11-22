@@ -1,0 +1,36 @@
+{
+  "appId": "app.xynk",
+  "productName": "XYNK",
+  "directories": {
+    "output": "release",
+    "buildResources": "resources"
+  },
+  "electronDist": "node_modules/electron/dist",
+  "files": [
+    "dist/main/**/*",
+    "dist/renderer/**/*",
+    "resources/icon.ico",
+    "resources/xynk-icon.png",
+    "package.json"
+  ],
+  "extraResources": [{"from": "resources/xynk-youtube-resolver.exe", "to": "xynk-youtube-resolver.exe"}],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "resources/icon.ico",
+    "publisherName": "XYNK"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "XYNK"
+  }
+}
