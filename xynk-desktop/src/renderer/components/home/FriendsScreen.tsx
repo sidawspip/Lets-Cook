@@ -1,3 +1,5 @@
+import { GlassDialog } from '../ui/GlassDialog';
+import { ArrowLeft } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, RefreshCw,UserPlus as PersonAdd,UserMinus as PersonRemove,UserRoundPlus as PersonAddAlt1, Check, X,MessageCircle as ChatBubbleOutline, MessageSquare, MoreVertical } from 'lucide-react';
@@ -67,23 +69,23 @@ export function FriendsScreen({ onClose }: { onClose: () => void }) {
         return name.includes(normalizedQuery) || handle.includes(normalizedQuery);
       });
 
-  if (loading) return <LoaderFullScreen />;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-xynk-ink">
-      <header className="px-4 py-3 flex items-center justify-between border-b border-xynk-line bg-black/50">
-        <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 transition-colors">
-          <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    <GlassDialog label="Friends" onClose={onClose} className="friends-dialog">
+      <header className="dialog-header px-4 py-3 flex items-center justify-between border-b border-white/10">
+        <button onClick={onClose} aria-label="Close friends" className="icon-button hover:bg-white/10 transition-colors">
+          <ArrowLeft className="w-5 h-5 text-white" aria-hidden="true" />
         </button>
         <h1 className="font-black text-xl text-white mx-auto">Friends</h1>
-        <button onClick={load} disabled={loading} className="p-2 rounded-xl hover:bg-white/10 transition-colors disabled:opacity-50">
+        <button onClick={load} aria-label="Refresh friends" disabled={loading} className="icon-button hover:bg-white/10 transition-colors disabled:opacity-50">
           <RefreshCw className={`w-6 h-6 text-white ${loading ? 'animate-spin' : ''}`} />
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-4">
+      <main className="dialog-body flex-1 min-h-0 overflow-y-auto p-5" aria-busy={loading}>
+        {loading && <p role="status" className="mb-4 text-sm text-xynk-muted">Loading friends…</p>}
         {error && (
-          <div className="mb-4 p-4 bg-red-500/20 border border-red-500/50 rounded-xl">
+          <div role="alert" className="mb-4 p-4 bg-red-500/20 border border-red-500/50 rounded-xl">
             <p className="text-red-300">{error}</p>
             <button onClick={load} className="mt-2 text-sm text-red-300 underline">Retry</button>
           </div>
@@ -91,7 +93,7 @@ export function FriendsScreen({ onClose }: { onClose: () => void }) {
 
         {/* Search */}
         <form className="mb-4 flex gap-2 max-w-xl mx-auto" onSubmit={event => {event.preventDefault(); if (friendId.trim()) void sendFriendRequest(friendId.trim());}}>
-          <input value={friendId} onChange={event => setFriendId(event.target.value)} className="input-field flex-1" placeholder="Friend user ID" aria-label="Friend user ID" />
+          <input value={friendId} onChange={event => setFriendId(event.target.value)} className="input-field flex-1 min-w-0" placeholder="Friend user ID" aria-label="Friend user ID" />
           <button type="submit" className="btn-primary px-4" disabled={!friendId.trim()}>Add friend</button>
         </form>
         <div className="mb-4">
@@ -101,8 +103,8 @@ export function FriendsScreen({ onClose }: { onClose: () => void }) {
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search friends"
-              className="w-full px-12 py-3 pl-12 bg-white/10 rounded-2xl border border-white/20 focus:border-white/70 focus:ring-2 focus:ring-white/20 text-white placeholder:text-white/70"
+              placeholder="Search friends" aria-label="Search friends"
+              className="friend-search w-full px-12 py-3 pl-12 bg-white/10 rounded-2xl border border-white/20 focus:border-white/70 focus:ring-2 focus:ring-white/20 text-white placeholder:text-white/70"
             />
           </div>
         </div>
@@ -138,7 +140,7 @@ export function FriendsScreen({ onClose }: { onClose: () => void }) {
           <h3 className="text-xs font-black text-xynk-muted tracking-wider">FRIENDS ({visibleFriends.length})</h3>
         </div>
 
-        {friends.length === 0 ? (
+        {loading ? null : friends.length === 0 ? (
           <div className="text-center py-12 text-white/50">
             <PersonAdd className="w-16 h-16 mx-auto mb-4 text-white/30" />
             <p className="text-lg font-medium">Your circle starts here</p>
@@ -156,7 +158,7 @@ export function FriendsScreen({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </main>
-    </div>
+    </GlassDialog>
   );
 }
 
@@ -168,7 +170,7 @@ function FriendTile({ friend, onTap, onChat }: { friend: any; onTap: () => void;
   const together = _watchTimeDetailed(friend.watchTogetherSeconds);
 
   return (
-    <button onClick={onTap} className="w-full flex items-center gap-3 p-3 rounded-xl bg-xynk-panelSoft border border-xynk-line hover:bg-white/5 transition-colors text-left">
+    <div className="glass-list-row w-full flex items-center gap-3 p-3 rounded-xl bg-xynk-panelSoft border border-xynk-line hover:bg-white/5 transition-colors text-left">
       <div className="relative w-10 h-10 rounded-full bg-gradient-to-br from-xynk-lime to-xynk-mint flex items-center justify-center flex-shrink-0">
         {avatar ? (
           <img src={avatar} alt="" className="w-full h-full rounded-full" />
@@ -179,14 +181,14 @@ function FriendTile({ friend, onTap, onChat }: { friend: any; onTap: () => void;
           <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-xynk-mint rounded-full border-2 border-xynk-panel" />
         )}
       </div>
-      <div className="flex-1 min-w-0">
+      <button onClick={onTap} className="flex-1 min-w-0 text-left rounded-lg py-2">
         <p className="font-medium text-white truncate">{name}</p>
         <p className="text-xs text-white/60 truncate">@{username} · {together} together</p>
-      </div>
-      <button onClick={onChat} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label={`Chat with ${name}`}>
+      </button>
+      <button onClick={onChat} className="icon-button hover:bg-white/10 transition-colors" aria-label={`Chat with ${name}`}>
         <MessageSquare className="w-5 h-5 text-white/70" />
       </button>
-    </button>
+    </div>
   );
 }
 

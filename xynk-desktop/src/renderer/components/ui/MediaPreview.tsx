@@ -19,7 +19,7 @@ const PLACEHOLDER_GRADIENTS: Record<string, string> = {
   PRIME_VIDEO: 'from-[#00A8E1] to-[#0077B3]',
   DIRECT_MP4: 'from-[#4ADE80] to-[#22C55E]',
   DIRECT_HLS: 'from-[#F472B6] to-[#EC4899]',
-  WEB: 'from-[#6366F1] to-[#8B5CF6]',
+  WEB: 'from-[#4B5F62] to-[#768A89]',
 };
 
 export function MediaPreview({
@@ -36,7 +36,7 @@ export function MediaPreview({
 
   const getProviderGradient = (prov: string) => {
     const upper = prov.toUpperCase();
-    return PLACEHOLDER_GRADIENTS[upper] || 'from-[#6366F1] to-[#8B5CF6]';
+    return PLACEHOLDER_GRADIENTS[upper] || 'from-[#4B5F62] to-[#768A89]';
   };
 
   const shouldBlur = sensitive && !imgLoaded;

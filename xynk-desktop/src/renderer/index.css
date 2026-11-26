@@ -2,141 +2,30 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Application defaults only. Reference styling lives under styles/ui4-*.css. */
 @layer base {
-  :root {
-    --color-primary: #F1A0FF;
-    --color-secondary: #73D8FF;
-  }
-
-  * {
-    @apply border-xynk-line;
-  }
-
-  html {
-    @apply scroll-smooth;
-  }
-
-  body {
-    @apply bg-xynk-ink text-xynk-text antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-    min-height: 100vh;
-    background-image: radial-gradient(circle at 86% 6%, rgba(215, 100, 236, 0.20), transparent 28%), radial-gradient(circle at 7% 85%, rgba(76, 139, 243, 0.21), transparent 32%), linear-gradient(135deg, #171a34, #15182b 54%, #272448);
-  }
-
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  ::-webkit-scrollbar-track {
-    @apply bg-xynk-ink;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-xynk-line rounded-full;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-xynk-muted;
-  }
-
-  *:focus-visible {
-    @apply outline-none ring-2 ring-xynk-lime ring-offset-2 ring-offset-xynk-ink;
-  }
-
-  ::selection {
-    @apply bg-xynk-lime/30 text-xynk-text;
-  }
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100dvh; color: var(--ui-text); background: var(--ui-background); font-family: var(--ui-font); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  button, input, textarea, select { font: inherit; }
+  button:not(:disabled), [role='button'] { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--ui-cyan); outline-offset: 3px; }
+  ::selection { background: #d69af15c; color: white; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { border-radius: 8px; background: #d4b4ee66; border: 2px solid transparent; background-clip: padding-box; }
 }
-
-@layer components {
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 px-6 py-3
-    bg-gradient-to-r from-[#B978EB] via-[#DA8CF1] to-[#B170E2] text-white font-semibold
-    rounded-2xl transition-all duration-200
-    hover:shadow-[0_0_24px_2px_rgba(241,160,255,0.47)]
-    active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-
-  .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 px-6 py-3
-    bg-xynk-panelSoft text-xynk-text font-semibold
-    rounded-2xl border border-xynk-line
-    transition-all duration-200
-    hover:bg-xynk-line/50 active:scale-[0.98];
-  }
-
-  .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2
-    text-xynk-text font-medium
-    rounded-xl transition-all duration-200
-    hover:bg-white/10 active:scale-[0.98];
-  }
-
-  .input-field {
-    @apply w-full px-4 py-3 bg-xynk-panelSoft text-xynk-text
-    placeholder:text-xynk-muted
-    rounded-2xl border border-xynk-line
-    transition-all duration-200
-    focus:border-xynk-lime focus:ring-2 focus:ring-xynk-lime/20
-    disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-
-  .card {
-    @apply bg-xynk-panel border border-xynk-line rounded-3xl
-    shadow-[0_12px_28px_-8px_rgba(0,0,0,0.4)];
-    background-image: linear-gradient(145deg, rgba(133, 128, 196, 0.23), rgba(34, 35, 69, 0.56));
-    backdrop-filter: blur(18px);
-  }
-
-  .sidebar-card {
-    @apply bg-xynk-panelSoft border border-xynk-line rounded-2xl
-    shadow-[0_8px_24px_-4px_rgba(0,0,0,0.3)];
-  }
-}
-
-@layer utilities {
-  .text-gradient-lime-mint {
-    @apply bg-gradient-to-r from-xynk-lime to-xynk-mint bg-clip-text text-transparent;
-  }
-  .text-gradient-coral-mint {
-    @apply bg-gradient-to-r from-xynk-coral to-xynk-mint bg-clip-text text-transparent;
-  }
-  .animate-in {
-    animation: fadeIn 0.18s ease-out, slideUp 0.26s ease-out;
-  }
-}
-
-/* Video.js overrides */
-.video-js {
-  @apply bg-black rounded-2xl overflow-hidden;
-}
-.video-js .vjs-control-bar {
-  @apply bg-gradient-to-t from-black/90 to-transparent;
-}
-.video-js .vjs-big-play-button {
-  @apply bg-xynk-lime/90 text-xynk-ink rounded-full;
-}
-.video-js:hover .vjs-big-play-button {
-  @apply bg-xynk-lime;
-}
-
-/* WebView */
-.webview {
-  @apply bg-black rounded-2xl overflow-hidden;
-}
-
-/* Ambient backdrop */
-.ambient-backdrop {
-  @apply fixed inset-0 -z-10 bg-gradient-to-br from-[#31204B] via-[#4B315D] to-[#101D2B];
-}
-.ambient-backdrop::before {
-  content: '';
-  @apply absolute -top-24 -right-24 w-[300px] h-[300px] rounded-full bg-[#66E33F9E] blur-[70px];
-}
-.ambient-backdrop::after {
-  content: '';
-  @apply absolute bottom-16 left-[-100px] w-[340px] h-[340px] rounded-full bg-[#661AA8D6] blur-[70px];
-}
-
-body .bg-xynk-ink {
-  background-color: #15182c;
-  background-image: radial-gradient(circle at 85% 7%, rgba(216, 113, 237, 0.20), transparent 28%), radial-gradient(circle at 5% 88%, rgba(83, 137, 245, 0.20), transparent 30%), linear-gradient(135deg, #171a34, #14192f 58%, #282344);
-}
+.video-js, .webview { background: #000; border-radius: var(--ui-radius-panel); overflow: hidden; }
+.video-js .vjs-control-bar { background: linear-gradient(0deg,#000d,transparent); }
+.video-js .vjs-big-play-button { background: var(--ui-primary); border-radius: 50%; color: white; }
+.text-gradient-lime-mint { background: linear-gradient(100deg,var(--ui-pink),var(--ui-cyan)); background-clip: text; color: transparent; }
+.text-gradient-coral-mint { background: linear-gradient(100deg,var(--ui-coral),var(--ui-cyan)); background-clip: text; color: transparent; }
+.desktop-shell { width: 100vw; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; position: relative; }
+.desktop-titlebar { position: absolute; top: 3px; right: 12px; height: 30px; z-index: 1000; color: #f6efff; -webkit-app-region: no-drag; user-select: none; }
+.desktop-titlebar-brand { display: none; }
+.desktop-window-actions { height: 100%; display: flex; -webkit-app-region: no-drag; }
+.desktop-window-actions button { width: 34px; height: 100%; display: flex; align-items: center; justify-content: center; color: inherit; background: transparent; border: 0; border-radius: 7px; }
+.desktop-window-actions button:hover { background: #ffffff22; }
+.desktop-window-actions .desktop-window-close:hover { background: #d94356; }
+.desktop-content { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.desktop-content > * { height: 100% !important; min-height: 0; }

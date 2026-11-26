@@ -1,0 +1,115 @@
+/* Theme only the room chrome. The media elements and DRM surface stay untouched. */
+.watch-room-shell {
+  color: var(--ui-text);
+  background: var(--ui-background);
+}
+.watch-room-ambient {
+  background:
+    radial-gradient(ellipse 48% 46% at 6% 12%, color-mix(in srgb, var(--ui-pink) 23%, transparent), transparent 78%),
+    radial-gradient(ellipse 40% 55% at 94% 92%, color-mix(in srgb, var(--ui-cyan) 17%, transparent), transparent 82%),
+    var(--ui-background);
+}
+.watch-room-ambient > div { display: none; }
+.watch-room-main {
+  padding: 14px;
+  gap: 14px;
+  background: radial-gradient(ellipse 62% 90% at 18% 80%, color-mix(in srgb, var(--ui-pink) 12%, transparent), transparent 74%);
+}
+.watch-room-header {
+  background: linear-gradient(150deg, #ffffff18, transparent 62%), var(--ui-frame-fill);
+  border-color: var(--ui-line);
+  box-shadow: inset 0 1px 0 #ffffff58, 0 8px 28px #00000020, 0 1px 18px color-mix(in srgb, var(--ui-pink) 22%, transparent);
+  padding-top: 38px;
+  padding-right: 14px;
+}
+.desktop-shell:has(.watch-room-shell) .desktop-titlebar {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 33px;
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 12px;
+  background: color-mix(in srgb, var(--ui-ink) 68%, transparent);
+  border-bottom: 1px solid var(--ui-line);
+}
+.watch-room-header button:hover { background: var(--ui-control); }
+.watch-room-header :is(p, h1, svg) { color: var(--ui-text); }
+.watch-room-header p:last-child { color: var(--ui-muted); }
+.watch-room-player-stage {
+  background: color-mix(in srgb, var(--ui-ink) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ui-pink) 64%, #ffffff50);
+  border-radius: 20px;
+  box-shadow: 0 0 0 1px #ffffff22 inset, 0 12px 42px #0005, 0 0 28px color-mix(in srgb, var(--ui-pink) 25%, transparent);
+}
+.watch-room-now-playing {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -66px;
+  min-height: 54px;
+  padding: 7px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 14px;
+  background: var(--ui-field-fill);
+  box-shadow: inset 0 1px 0 #ffffff3d;
+}
+.watch-room-now-playing-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.watch-room-now-playing-copy span { color: var(--ui-pink); font-size: 10px; font-weight: 800; letter-spacing: .07em; }
+.watch-room-now-playing-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.watch-room-viewers { flex: none; border: 1px solid var(--ui-line); border-radius: 999px; padding: 5px 9px; font-size: 11px; color: var(--ui-muted); }
+.watch-room-side-panel {
+  background: linear-gradient(150deg, #ffffff1a, transparent 55%), var(--ui-frame-fill);
+  border: 1px solid color-mix(in srgb, var(--ui-pink) 60%, #ffffff50);
+  border-radius: 20px;
+  color: var(--ui-text);
+  box-shadow: inset 0 1px 0 #ffffff55, 0 12px 42px #0005, 0 0 26px color-mix(in srgb, var(--ui-pink) 23%, transparent);
+  overflow: hidden;
+}
+.watch-room-tabbar {
+  background: var(--ui-field-fill);
+  border-color: var(--ui-line);
+  gap: 5px;
+  margin: 9px;
+  padding: 4px;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+}
+.watch-room-tab { color: var(--ui-muted); }
+.watch-room-tab:hover { background: var(--ui-control); color: var(--ui-text); }
+.watch-room-tab[class*="bg-xynk-lime"] {
+  background: var(--ui-primary);
+  color: var(--ui-ink);
+  box-shadow: inset 0 1px 0 #ffffff55, 0 2px 12px color-mix(in srgb, var(--ui-pink) 28%, transparent);
+}
+.watch-room-side-panel :is(input, textarea) { border-color: var(--ui-line); }
+.watch-room-settings {
+  background: var(--ui-frame-fill);
+  border-color: var(--ui-line);
+  color: var(--ui-text);
+  box-shadow: 0 24px 80px #0008, inset 0 1px 0 #ffffff36;
+}
+.watch-room-settings .text-xynk-mint { color: var(--ui-pink); }
+@media (min-width: 1024px) {
+  .watch-room-main > .watch-room-player-stage {
+    flex: 1 1 0%;
+    width: auto;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    max-height: calc(100% - 66px);
+    align-self: flex-start;
+  }
+  .watch-room-now-playing { display: flex; }
+  .watch-room-main > .watch-room-side-panel { height: 100%; max-width: 480px; }
+}
+@media (max-width: 1023px) {
+  .watch-room-main { padding: 10px; gap: 10px; }
+  .watch-room-side-panel { border-radius: 16px; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .watch-room-header, .watch-room-side-panel, .watch-room-settings { backdrop-filter: none; background: var(--ui-ink); }
+}

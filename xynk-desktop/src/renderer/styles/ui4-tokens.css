@@ -1,0 +1,50 @@
+/* Graphite/chrome glass with jade, champagne and iris reflected accents. */
+:root {
+  --ui-font: Inter, 'Segoe UI', system-ui, sans-serif;
+  --ui-text: #f4f7f6;
+  --ui-muted: #d0d8da;
+  --ui-jade: #79d4bc;
+  --ui-champagne: #e8c497;
+  --ui-iris: #b8a9e2;
+  --ui-pink: var(--ui-jade);
+  --ui-violet: var(--ui-iris);
+  --ui-cyan: var(--ui-jade);
+  --ui-coral: var(--ui-champagne);
+  --ui-success: #8ad5ad;
+  --ui-ink: #172326;
+  --ui-fill: rgb(235 245 243 / .08);
+  --ui-field-fill: rgb(237 244 241 / .10);
+  --ui-frame-fill: rgb(25 32 35 / .44);
+  --ui-line: rgb(237 245 241 / .28);
+  --ui-line-strong: rgb(255 255 255 / .66);
+  --ui-specular: inset 0 1px 1px rgb(255 255 255 / .56), inset 0 -1px 1px rgb(208 225 222 / .18);
+  --ui-depth: 0 12px 30px rgb(4 12 16 / .24);
+  --ui-control-depth: 0 3px 10px rgb(4 12 16 / .18);
+  --ui-primary: linear-gradient(135deg,#d3e8e0,#84c9b5 48%,#c6dcd5);
+  --ui-control: linear-gradient(155deg,#ffffff2e,#e4ecec0a 35%,#b5c0c408 68%,#ffffff12);
+  --ui-rim: linear-gradient(135deg,#ffffffd9,#d6e6e424 27%,#e8c49761 55%,#b8a9e278 78%,#ffffffa6);
+  --ui-radius-field: 13px;
+  --ui-radius-control: 12px;
+  --ui-radius-card: 16px;
+  --ui-radius-panel: 22px;
+  --ui-blur: 16px;
+  --ui-touch: 44px;
+  --ui-gutter: 24px;
+  --ui-scrollbar: 8px;
+  --ui-fast: 140ms;
+  --ui-normal: 260ms;
+  --ui-slow: 340ms;
+  --ui-ease: cubic-bezier(.2,.8,.2,1);
+  --ui-background:
+    radial-gradient(ellipse 90% 65% at -18% -22%,transparent 65%,#d4e8e31f 66%,#ffffff47 67%,#79d4bc29 69%,transparent 73%),
+    radial-gradient(ellipse 87% 74% at 114% 124%,transparent 63%,#e8c49733 64%,#f7ead14d 65%,#b8a9e226 68%,transparent 72%),
+    radial-gradient(ellipse at 0% 12%,#5ca99075,transparent 45%),
+    radial-gradient(ellipse at 95% 92%,#b48b586b,transparent 42%),
+    radial-gradient(ellipse at 88% 5%,#8275ad70,transparent 43%),
+    linear-gradient(125deg,#34494b,#232b32 54%,#42414c);
+  --color-primary: var(--ui-pink);
+  --color-secondary: var(--ui-cyan);
+  --glass-fill: var(--ui-fill);
+  --glass-edge: var(--ui-line);
+  --glass-shadow: var(--ui-depth),var(--ui-specular);
+}

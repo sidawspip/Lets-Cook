@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Search, Settings, Users, Plus, Globe, Lock, ChevronDown } from 'lucide-react';
+import { Search, Settings, Users, Plus, Globe, Lock, ChevronDown, Play } from 'lucide-react';
 import { useWatchPartyStore } from '../../stores/watchPartyStore';
 import { useUIStore } from '../../stores/uiStore';
 import { MediaPreview } from '../ui/MediaPreview';
@@ -47,50 +47,43 @@ export function HomeScreen() {
   const publicRooms = visibleRooms.filter(r => !r.joined);
 
   return (
-    <div className="min-h-screen bg-xynk-ink relative flex flex-col">
-      {/* Ambient backdrop */}
-      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-[#31204B] via-[#4B315D] to-[#101D2B]">
-        <div className="absolute -top-90 -right-90 w-[300px] h-[300px] rounded-full bg-[#66E33F9E] blur-[70px]" />
-        <div className="absolute bottom-70 left-[-100px] w-[340px] h-[340px] rounded-full bg-[#661AA8D6] blur-[70px]" />
-        <div className="absolute inset-0 bg-gradient-to-b from-[#12000000] to-[#B3050910]" />
-      </div>
-
-      <div className="relative flex-1 flex flex-col">
+    <div className="home-screen h-dvh overflow-hidden app-surface relative flex flex-col">
+      <div className="home-shell relative flex-1 flex flex-col">
         {/* Header */}
-        <header className="px-4 py-2.5 flex items-center justify-between">
-          <button onClick={() => setProfileSheetOpen(true)} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Open settings">
+        <header className="home-header flex items-center justify-between">
+          <button onClick={() => setProfileSheetOpen(true)} className="icon-button hover:bg-white/10 transition-colors" aria-label="Open settings">
             <Settings className="w-7 h-7 text-white" />
           </button>
 
-          <LogoMark size={32} className="mx-auto" />
+          <div className="flex items-center gap-2.5"><LogoMark size={32} /><h1 className="text-xl font-bold tracking-wide">XYNK</h1></div>
 
-          <button onClick={() => setFriendsOpen(true)} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Open friends">
+          <button onClick={() => setFriendsOpen(true)} className="icon-button hover:bg-white/10 transition-colors" aria-label="Open friends">
             <Users className="w-7 h-7 text-white" />
           </button>
         </header>
 
         {/* Search */}
-        <div className="px-4 py-2">
-          <div className="max-w-2xl mx-auto relative">
+        <div className="home-search-region">
+          <form className="relative" onSubmit={event => { event.preventDefault(); const value = new FormData(event.currentTarget).get("videoSearch")?.toString().trim(); if (value) setDiscoveryQuery(value); }}>
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/70" />
             <input
-              type="search"
+              type="search" name="videoSearch" aria-label="Search YouTube or paste a video URL"
               placeholder="Search YouTube or paste a video URL"
-              className="w-full px-12 py-3 pl-12 bg-white/10 rounded-2xl border border-white/20 focus:border-white/70 focus:ring-2 focus:ring-white/20 text-white placeholder:text-white/70 transition-all"
-              onKeyDown={e => e.key === 'Enter' && e.currentTarget.value.trim() && setDiscoveryQuery(e.currentTarget.value.trim())}
+              className="home-search w-full px-12 py-3 pl-12 bg-white/10 rounded-2xl border border-white/20 focus:border-white/70 focus:ring-2 focus:ring-white/20 text-white placeholder:text-white/70 transition-all"
             />
-          </div>
+            <button type="submit" aria-label="Search videos" className="search-action icon-button absolute right-1 top-1/2 -translate-y-1/2"><Play size={18} fill="currentColor" /></button>
+          </form>
         </div>
 
         {/* Rooms List */}
-        <main className="flex-1 overflow-y-auto px-4 pb-24">
-          <div className="max-w-4xl mx-auto">
+        <main className="home-rooms flex-1 min-h-0 overflow-y-auto">
+          <div className="home-room-content">
             {error && <div role="alert" className="mb-3 p-3 rounded-xl border border-red-400/40 bg-red-500/10 text-red-200 text-sm">{error}</div>}
             <ConnectionBanner />
             {!profile && <SensitiveContentToggle />}
 
             <SectionTitle icon={Lock} label="Invited" count={invited.length} />
-            <RoomGrid rooms={invited} />
+            {invited.length > 0 ? <RoomGrid rooms={invited} /> : <p className="room-grid rounded-2xl border border-white/10 p-4 text-sm text-xynk-muted">Rooms you join will appear here.</p>}
 
             <SectionTitle icon={Globe} label="Public" count={publicRooms.length} />
             {publicRooms.length === 0 ? <EmptyRoomCard /> : <RoomGrid rooms={publicRooms} />}
@@ -133,20 +126,20 @@ function ConnectionBanner() {
   return (
     <button
       onClick={() => setExpanded(!expanded)}
-      className="w-full p-4 rounded-2xl bg-white/10 border border-white/20 transition-all mb-4"
+      className="glass-surface w-full p-4 rounded-2xl text-left transition-colors mb-6"
       aria-expanded={expanded}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className={`w-2.5 h-2.5 rounded-full transition-colors ${reconnecting ? 'bg-yellow-400 animate-pulse' : fullyConnected ? 'bg-xynk-mint' : 'bg-white/40'}`} />
+          <div className={`connection-dot w-2.5 h-2.5 rounded-full transition-colors ${reconnecting ? 'bg-yellow-400 animate-pulse' : fullyConnected ? 'bg-xynk-mint' : 'bg-white/40'}`} />
           <span className="text-sm font-bold tracking-wide text-white">
-            {reconnecting ? 'RECONNECTING' : 'STAY CONNECTED'}
+            {reconnecting ? 'RECONNECTING' : fullyConnected ? 'STAY CONNECTED' : 'CONNECTING'}
           </span>
         </div>
         <ChevronDown className={`w-5 h-5 text-white/70 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </div>
       {expanded && (
-        <div className="mt-3 text-sm text-white/80 animate-fade-in">
+        <div className="connection-copy mt-3 text-sm text-white/80">
           XYNK keeps your room connected while this window is open. If the connection is interrupted, it automatically rejoins and syncs the video when you return.
         </div>
       )}
@@ -174,16 +167,14 @@ function SensitiveContentToggle() {
       {saving ? (
         <div className="w-9 h-9 rounded-full border-2 border-xynk-lime/50 border-t-xynk-lime animate-spin" />
       ) : (
-        <input
-          type="checkbox"
-          checked={hideSensitiveContent}
-          onChange={() => setHideSensitiveContent(!hideSensitiveContent)}
-          className="w-10 h-6 appearance-none bg-white/10 rounded-full relative"
-          style={{
-            backgroundImage: `linear-gradient(to right, ${hideSensitiveContent ? '#FF5D83' : '#73D8FF'}, ${hideSensitiveContent ? '#FF5D83' : '#73D8FF'})`,
-            borderRadius: '9999px',
-          }}
-        />
+        <button
+          type="button"
+          role="switch"
+          aria-label="Hide sensitive content"
+          aria-checked={hideSensitiveContent}
+          onClick={() => setHideSensitiveContent(!hideSensitiveContent)}
+          className="icon-button"
+        ><span className="settings-switch" aria-hidden="true" /></button>
       )}
     </div>
   );
@@ -201,7 +192,7 @@ function SectionTitle({ icon: Icon, label, count }: { icon: React.ComponentType<
 
 function RoomGrid({ rooms }: { rooms: PartyRoom[] }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div className="room-grid grid grid-cols-1 md:grid-cols-2 gap-3">
       {rooms.map(room => <RoomCard key={room.id} room={room} />)}
     </div>
   );
@@ -220,12 +211,12 @@ function RoomCard({ room }: { room: PartyRoom }) {
   const provider = room.mediaProvider ?? (youtubeId ? 'YOUTUBE' : 'WEB');
   const sensitive = _looksSensitive(`${room.name} ${room.mediaTitle ?? ''} ${room.mediaId ?? ''}`);
   const duration = room.durationSeconds ?? 0;
-  const progress = duration > 0 ? (room.positionSeconds / duration) : 0;
+  const progress = duration > 0 ? Math.min(1, Math.max(0, room.positionSeconds / duration)) : 0;
 
   return (
-    <article onClick={() => void enterRoom()} role="button" tabIndex={0} onKeyDown={event => {if (event.key === 'Enter') void enterRoom();}} className="relative bg-xynk-panelSoft/80 border border-xynk-line rounded-2xl overflow-hidden cursor-pointer transition-colors hover:border-xynk-lime/50">
+    <article onClick={() => void enterRoom()} role="button" tabIndex={0} onKeyDown={event => {if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void enterRoom(); }}} className="room-card relative rounded-2xl overflow-hidden cursor-pointer transition-colors hover:border-xynk-lime/50">
       <div className="relative flex h-[108px]">
-        <div className="relative w-[142px] flex-shrink-0">
+        <div className="room-thumbnail relative flex-shrink-0">
           <MediaPreview
             mediaId={room.mediaId ?? ''}
             provider={provider}
@@ -245,21 +236,14 @@ function RoomCard({ room }: { room: PartyRoom }) {
             <p className="text-xs text-white/80 truncate mt-1">Host: {room.ownerName}</p>
           )}
           <div className="mt-auto flex items-center justify-between">
-            <div className="flex items-center gap-1">
-              <div className="flex -space-x-2">
-                {Array.from({ length: Math.min(4, Math.max(1, room.viewerCount)) }).map((_, i) => (
-                  <div key={i} className="w-5 h-5 rounded-full bg-xynk-panel border-2 border-xynk-ink flex-shrink-0">
-                    <Users className="w-3 h-3 text-xynk-muted" />
-                  </div>
-                ))}
-              </div>
-              <span className="text-xs font-black text-white ml-1">{room.viewerCount}</span>
+            <div className="room-viewers text-xs text-white/90" aria-label={`${room.viewerCount} watching`}>
+              <Users className="w-4 h-4" aria-hidden="true" /><span>{room.viewerCount}</span>
             </div>
           </div>
         </div>
 
         {/* Progress bar */}
-        <div className="absolute left-0 right-0 bottom-0 h-1.5 bg-gradient-to-r from-xynk-lime to-xynk-mint origin-left"
+        <div className="room-progress absolute left-0 right-0 bottom-0 h-1.5 bg-gradient-to-r from-xynk-lime to-xynk-mint origin-left"
           style={{ transform: `scaleX(${progress})` }} />
       </div>
     </article>
@@ -279,16 +263,13 @@ function FloatingActionButton({ onClick, disabled, children }: { onClick: () => 
     <button
       onClick={onClick}
       disabled={disabled}
-      className="fixed right-6 bottom-6 z-40 w-14 h-14 rounded-full
-        shadow-[0_24px_24px_2px_rgba(158,98,255,0.47)]
+      aria-label="Create a room"
+      className="home-create right-6 bottom-6 z-40 w-14 h-14 rounded-full
+        bg-xynk-lime text-xynk-ink border border-white/30 shadow-lg
         flex items-center justify-center
         transition-all duration-200
         disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none
         active:scale-[0.96]"
-      style={{
-        background: 'linear-gradient(135deg, #FF78C8 0%, #9B6CFF 50%, #45D8FF 100%)',
-        border: '1.3px solid rgba(255,255,255,0.6)',
-      }}
     >
       {children}
     </button>

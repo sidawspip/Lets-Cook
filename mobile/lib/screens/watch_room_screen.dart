@@ -4712,7 +4712,10 @@ class _MessageBubble extends StatelessWidget {
               ),
               const SizedBox(height: 5),
             ],
-            _MentionText(message.body),
+            if (isRaveEmoji(message.body))
+              RaveAnimatedEmoji(emoji: message.body, mine: message.isMine)
+            else
+              _MentionText(message.body),
             const SizedBox(height: 5),
             Wrap(
               spacing: 4,

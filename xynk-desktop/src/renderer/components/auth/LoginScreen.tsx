@@ -29,21 +29,24 @@ export function LoginScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-xynk-ink flex items-center justify-center p-6">
+    <div className="login-screen min-h-screen bg-xynk-ink flex items-center justify-center p-6">
       <div className="absolute inset-0 -z-10 bg-gradient-to-br from-[#31204B] via-[#4B315D] to-[#101D2B]">
         <div className="absolute -top-90 -right-90 w-[300px] h-[300px] rounded-full bg-[#66E33F9E] blur-[70px]" />
         <div className="absolute bottom-70 left-[-100px] w-[340px] h-[340px] rounded-full bg-[#661AA8D6] blur-[70px]" />
         <div className="absolute inset-0 bg-gradient-to-b from-[#12000000] to-[#B3050910]" />
       </div>
 
-      <div className="w-full max-w-[560px] relative px-2 md:px-6">
+      <div className="login-card glass-surface w-full max-w-[560px] relative px-2 md:px-6">
+        <div className="login-intro">
         <div className="flex justify-start mb-10">
           <LogoMark size={62} />
         </div>
 
         <h1 className="text-left text-4xl md:text-[46px] leading-[0.98] font-black tracking-tight text-white mb-4">Watch together.<br />Stay connected.</h1>
         <p className="text-left text-xynk-muted mb-10">Watch, talk, and build the queue together—without leaving the room.</p>
+        </div>
 
+        <div className="login-form-column">
         {error && (
           <div className="mb-6 p-4 bg-red-500/20 border border-red-500/50 rounded-xl text-red-300 text-sm">
             {error}
@@ -52,8 +55,10 @@ export function LoginScreen() {
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
+            <label htmlFor="login-username" className="block text-xs font-medium mb-2 text-xynk-muted">Username</label>
             <div className="relative"><UserRound className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-xynk-muted" /><input
               type="text"
+              id="login-username"
               value={username}
               onChange={e => setUsername(e.target.value)}
               className="input-field pl-11"
@@ -64,10 +69,12 @@ export function LoginScreen() {
           </div>
 
           <div>
+            <label htmlFor="login-password" className="block text-xs font-medium mb-2 text-xynk-muted">Password</label>
             <div className="relative">
               <LockKeyhole className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-xynk-muted" />
               <input
                 type={showPassword ? 'text' : 'password'}
+                id="login-password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="input-field pl-11 pr-12"
@@ -77,6 +84,7 @@ export function LoginScreen() {
               />
               <button
                 type="button"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-4 top-1/2 -translate-y-1/2 text-xynk-muted hover:text-white"
               >
@@ -105,6 +113,7 @@ export function LoginScreen() {
           <button type="button" disabled={busy} onClick={() => void handleProvider('google')} className="btn-secondary w-full py-2 text-xynk-lime"><span className="font-black text-lg">G</span>Continue with Google</button>
           <button type="button" disabled={busy} onClick={() => void handleProvider('x')} className="btn-secondary w-full py-2 text-xynk-lime"><span className="font-black text-lg">𝕏</span>Continue with X</button>
           <button type="button" onClick={() => void window.xynkDesktop.register()} className="btn-secondary w-full py-2 text-xynk-lime"><UserRoundPlus className="w-4 h-4" />Create an account</button>
+        </div>
         </div>
       </div>
     </div>

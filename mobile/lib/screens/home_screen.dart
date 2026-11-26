@@ -1926,7 +1926,7 @@ class _DirectChatScreenState extends State<_DirectChatScreen> {
                             itemBuilder: (_, index) {
                               final message = _messages[index];
                               final mine = message.senderId == myId;
-                              final emojiOnly = _isRaveEmoji(message.body);
+                              final emojiOnly = isRaveEmoji(message.body);
                               return Align(
                                 alignment: mine
                                     ? Alignment.centerRight
@@ -2161,8 +2161,8 @@ class _DirectMessageContent extends StatelessWidget {
           ),
         if (message.body.isNotEmpty) ...[
           if (url != null) const SizedBox(height: 8),
-          if (_isRaveEmoji(message.body))
-            _RaveAnimatedEmoji(emoji: message.body, mine: mine)
+          if (isRaveEmoji(message.body))
+            RaveAnimatedEmoji(emoji: message.body, mine: mine)
           else
             Text(message.body),
         ],
@@ -2171,22 +2171,22 @@ class _DirectMessageContent extends StatelessWidget {
   }
 }
 
-bool _isRaveEmoji(String value) =>
+bool isRaveEmoji(String value) =>
     value.isNotEmpty &&
     value.characters.length <= 3 &&
     !RegExp(r'[A-Za-z0-9]').hasMatch(value);
 
-class _RaveAnimatedEmoji extends StatefulWidget {
-  const _RaveAnimatedEmoji({required this.emoji, required this.mine});
+class RaveAnimatedEmoji extends StatefulWidget {
+  const RaveAnimatedEmoji({super.key, required this.emoji, required this.mine});
 
   final String emoji;
   final bool mine;
 
   @override
-  State<_RaveAnimatedEmoji> createState() => _RaveAnimatedEmojiState();
+  State<RaveAnimatedEmoji> createState() => _RaveAnimatedEmojiState();
 }
 
-class _RaveAnimatedEmojiState extends State<_RaveAnimatedEmoji>
+class _RaveAnimatedEmojiState extends State<RaveAnimatedEmoji>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,

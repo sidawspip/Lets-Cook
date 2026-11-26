@@ -7,6 +7,8 @@ Starts the local Xynk stack and its three clients in order.
 .\run.ps1 -DryRun
 .EXAMPLE
 .\run.ps1 -SkipAndroid -SkipWindows
+# Local development only. Use scripts/start-public.ps1 after the stack is healthy
+# when this laptop should serve xynk.in through the named Cloudflare tunnel.
 #>
 param(
     [switch]$SkipBuild,
@@ -23,8 +25,7 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $compose = Join-Path $root 'compose.yaml'
 $apk = Join-Path $root 'mobile/build/app/outputs/flutter-apk/app-debug.apk'
-$windowsDir = Join-Path $root 'windows_app/build/windows/x64/runner/Debug'
-$windowsExe = Join-Path $windowsDir 'Xynk.exe'
+$desktopRoot = Join-Path $root 'xynk-desktop'
 $androidPackage = 'world.letscook.lets_cook_mobile'
 
 function Step([int]$Number, [string]$Title) {
@@ -67,7 +68,8 @@ function Wait-Url([string]$Url, [datetime]$Deadline) {
 Step 1 'Check tools and project files'
 Run 'Check Docker, Compose, Flutter, and local project files' {
     Require-Command docker
-    if (-not $SkipAndroid -or -not $SkipWindows -or $Test) { Require-Command flutter }
+    if (-not $SkipAndroid -or $Test) { Require-Command flutter }
+    if (-not $SkipWindows) { Require-Command npm; Require-Command dart }
     if (-not (Test-Path -LiteralPath $compose)) { throw "Missing $compose" }
     & docker compose --project-directory $root -f $compose config --quiet
     if ($LASTEXITCODE -ne 0) { throw 'Compose configuration is invalid.' }
@@ -99,12 +101,25 @@ if (-not $SkipAndroid) {
 }
 if (-not $SkipWindows) {
     if ($SkipBuild) {
-        Run "Use existing Windows debug build: $windowsExe (confirm it was built with local URLs)" {
-            if (-not (Test-Path -LiteralPath $windowsExe -PathType Leaf)) { throw "Missing $windowsExe; rerun without -SkipBuild." }
+        Run 'Use the newest existing Electron desktop build' {
+            $script:windowsExe = Get-ChildItem -LiteralPath $desktopRoot -Directory -Filter 'release-local-*' |
+                Sort-Object LastWriteTime -Descending |
+                ForEach-Object { Join-Path $_.FullName 'win-unpacked/XYNK.exe' } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Select-Object -First 1
+            if (-not $windowsExe) { throw 'No packaged Electron build found; rerun without -SkipBuild.' }
         }
     } else {
-        Run 'Build Windows debug app with local URLs' {
-            & (Join-Path $root 'windows_app/scripts/prod/build.ps1') -Configuration Debug -Local
+        Run 'Build the Electron desktop app against public Xynk URLs' {
+            Push-Location $desktopRoot
+            try { & npm run build } finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { throw 'Electron desktop build failed.' }
+            $script:windowsExe = Get-ChildItem -LiteralPath $desktopRoot -Directory -Filter 'release-local-*' |
+                Sort-Object LastWriteTime -Descending |
+                ForEach-Object { Join-Path $_.FullName 'win-unpacked/XYNK.exe' } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Select-Object -First 1
+            if (-not $windowsExe) { throw 'Built Electron executable was not found.' }
         }
     }
 }
@@ -112,10 +127,7 @@ if (-not $SkipWindows) {
 Step 5 'Launch Windows app'
 if (-not $SkipWindows) {
     Run 'Open Windows Xynk' {
-        $existing = Get-CimInstance Win32_Process -Filter "name = 'Xynk.exe'" |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith((Join-Path $root 'windows_app/build/'), [StringComparison]::OrdinalIgnoreCase) }
-        foreach ($process in $existing) { Stop-Process -Id $process.ProcessId -Force }
-        Start-Process -FilePath $windowsExe -WorkingDirectory $windowsDir | Out-Null
+        Start-Process -FilePath $windowsExe -WorkingDirectory (Split-Path $windowsExe) | Out-Null
     }
 }
 
@@ -148,6 +160,6 @@ if ($Test) {
     Run 'Test two-account room flow' { & (Join-Path $root 'backend/scripts/dev/test-core-two-accounts.ps1') -PushObservationSeconds 5 }
     Run 'Test room media permissions' { & (Join-Path $root 'backend/scripts/dev/test-room-role-media.ps1') }
     if (-not $SkipAndroid) { Run 'Run Android Flutter tests' { Push-Location (Join-Path $root 'mobile'); try { & flutter test } finally { Pop-Location } } }
-    if (-not $SkipWindows) { Run 'Run Windows Flutter tests' { Push-Location (Join-Path $root 'windows_app'); try { & flutter test } finally { Pop-Location } } }
+    if (-not $SkipWindows) { Run 'Run Electron desktop type checks' { Push-Location $desktopRoot; try { & npm run type-check } finally { Pop-Location } } }
 }
 Write-Host "`nXynk startup sequence complete." -ForegroundColor Green

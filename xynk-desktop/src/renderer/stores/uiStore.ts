@@ -1,6 +1,9 @@
 import { create } from 'zustand';
+import { applyTheme, getTheme, readTheme, THEME_KEY } from '../themes/appearance';
 
 interface UIState {
+  themeId: string;
+  setThemeId: (id: string) => void;
   isProfileSheetOpen: boolean;
   setProfileSheetOpen: (open: boolean) => void;
   isFriendsOpen: boolean;
@@ -24,6 +27,13 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
+  themeId: readTheme(),
+  setThemeId: (id) => {
+    const themeId = getTheme(id).id;
+    applyTheme(themeId);
+    try { localStorage.setItem(THEME_KEY, themeId); } catch { /* Session selection still works when storage is unavailable. */ }
+    set({ themeId });
+  },
   isProfileSheetOpen: false,
   setProfileSheetOpen: (open) => set({ isProfileSheetOpen: open }),
   isFriendsOpen: false,

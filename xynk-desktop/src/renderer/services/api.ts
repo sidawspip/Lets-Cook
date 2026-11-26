@@ -75,7 +75,13 @@ export const api = {
       body: params.toString(),
     });
 
-    if (!res.ok) throw new ApiError(res.status, 'Invalid credentials');
+    if (!res.ok) {
+      const failure = await res.json().catch(() => ({})) as {error?: string; error_description?: string};
+      const reason = failure.error_description || failure.error;
+      throw new ApiError(res.status,
+        res.status === 401 && failure.error === 'invalid_grant' ? 'Incorrect username or password.'
+          : reason ? `Sign-in failed: ${reason}` : `Sign-in request failed (HTTP ${res.status}).`);
+    }
     const json = await res.json();
     const session: StoredSession = {
       accessToken: json.access_token,

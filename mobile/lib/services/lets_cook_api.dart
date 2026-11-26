@@ -117,9 +117,14 @@ class LetsCookApi {
         )
         .timeout(_networkTimeout);
     if (response.statusCode != 200) {
-      throw const ApiException(
-        'Could not sign in. Check your username and password.',
-      );
+      String? reason;
+      try {
+        final failure = jsonDecode(response.body) as Map<String, dynamic>;
+        reason = (failure['error_description'] ?? failure['error'])?.toString();
+      } catch (_) { /* Non-JSON gateway response. */ }
+      throw ApiException(reason == null || reason.isEmpty
+          ? 'Sign-in request failed (HTTP ${response.statusCode}).'
+          : 'Sign-in failed: $reason');
     }
     await _acceptTokenResponse(response);
     startSessionRefresh();

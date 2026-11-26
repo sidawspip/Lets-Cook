@@ -1,0 +1,6 @@
+/* UI4 entry point. One owner per concern; no cumulative theme overrides. */
+@import './styles/ui4-tokens.css';
+@import './styles/ui4-materials.css';
+@import './styles/ui4-components.css';
+@import './styles/ui4-layout.css';
+@import './styles/ui4-motion.css';

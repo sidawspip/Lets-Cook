@@ -12,7 +12,7 @@ class NotificationStream {
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) return;
     const token = localStorage.getItem('access_token');
     if (!token) return;
-    const base = new URL(import.meta.env.VITE_API_BASE || 'https://xynk.in/api');
+    const base = new URL(import.meta.env.VITE_API_BASE || 'https://xynk.in/api', window.location.origin);
     const socket = new WebSocket(`${base.protocol === 'https:' ? 'wss:' : 'ws:'}//${base.host}/ws`);
     this.socket = socket;
     socket.onopen = () => socket.send(`CONNECT\naccept-version:1.2\nheart-beat:0,0\nAuthorization:Bearer ${token}\n\n\0`);

@@ -1,0 +1,27 @@
+/* Three reference materials: shell, inset glass and luminous action. */
+.app-surface,.ambient-backdrop,.bg-xynk-ink:is(.fixed,.min-h-screen,.h-screen) { background: var(--ui-background); background-attachment: fixed; }
+.home-shell,.glass-dialog,.glass-drawer,.watch-panel,.glass-surface,.card,.sidebar-card {
+  background: linear-gradient(150deg,#ffffff14,transparent 32%,#dbe8e407 73%,#ffffff0d),var(--ui-frame-fill);
+  border: 1px solid var(--ui-line);
+  box-shadow: var(--ui-specular),var(--ui-depth);
+  backdrop-filter: blur(var(--ui-blur)) saturate(125%);
+}
+.glass-surface,.card,.sidebar-card { border-radius: var(--ui-radius-panel); }
+.card { padding: 20px; }
+.glass-drawer { border-top-color: var(--ui-line-strong); border-left-color: #d3e3dc7a; }
+.bg-xynk-panel,.bg-xynk-panelSoft,.bg-xynk-panel\/90,.bg-xynk-panelSoft\/80 { background-color: #dbe8e414; background-image: var(--ui-control); }
+.bg-xynk-panel.border:not(.settings-row),.bg-xynk-panelSoft.border:not(.settings-row) { border-color: var(--ui-line); box-shadow: var(--ui-specular); }
+.glass-rim { position: relative; }
+.glass-rim::before,.home-shell::before,.glass-dialog::before { content: ''; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none; background: var(--ui-rim); mask: linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); mask-composite: exclude; }
+.watch-surface { isolation: isolate; }
+.watch-content { z-index: 1; }
+.ambient-video-layer { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.ambient-video-canvas,.ambient-video-artwork { position: absolute; inset: -8%; width: 116%; height: 116%; object-fit: cover; filter: blur(48px) saturate(130%); opacity: .85; }
+.ambient-video-canvas { opacity: 0; transition: opacity 500ms var(--ui-ease); }
+.ambient-video-canvas[data-ready='true'] { opacity: .85; }
+.ambient-video-scrim { position: absolute; inset: 0; background: linear-gradient(130deg,#1d292b66,#151c2480); }
+@supports not (backdrop-filter:blur(1px)) { .home-shell,.glass-dialog,.glass-drawer,.watch-panel,.glass-surface,.card,.sidebar-card { background: #303b40; } }
+@media (prefers-reduced-transparency:reduce) {
+  .home-shell,.glass-dialog,.glass-drawer,.watch-panel,.glass-surface,.card,.sidebar-card,.bg-xynk-panel,.bg-xynk-panelSoft { background: #303b40; backdrop-filter: none; }
+  .ambient-video-layer { display: none; }
+}

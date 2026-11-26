@@ -1,17 +1,15 @@
 import { useWatchPartyStore } from '../../stores/watchPartyStore';
 import { MediaPreview } from '../ui/MediaPreview';
-import { _time } from '../../lib/formatters';
-import { Users,MousePointerClick as TouchApp,Vote as HowToVote,Plus as Add} from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { QueueItem } from '../../types/models';
 
 export function QueuePanel() {
-  const { roomQueue, personalQueue, selectQueueItem, voteQueueItem, setShelfOpen, canControlWatch } = useWatchPartyStore();
+  const { roomQueue, personalQueue, suggestions, addSuggestion, selectQueueItem, voteQueueItem, setShelfOpen, canControlWatch, watchState } = useWatchPartyStore();
 
   return (
     <div className="p-3 space-y-4">
-      {roomQueue.length > 0 && (
-        <div>
-          <h3 className="text-xs font-black text-xynk-lime tracking-wider mb-3">UP NEXT · VOTE</h3>
+      <section aria-label="Room queue">
+          <h3 className="text-xs font-black text-xynk-lime tracking-wider mb-3">ROOM QUEUE · {roomQueue.length}</h3>
           <div className="space-y-2">
             {roomQueue.map((item) => (
               <QueueRow
@@ -23,20 +21,11 @@ export function QueuePanel() {
               />
             ))}
           </div>
-        </div>
-      )}
+          {roomQueue.length === 0 && <p className="text-xs text-white/50">No videos waiting for the room.</p>}
+      </section>
 
-      {roomQueue.length === 0 && personalQueue.length === 0 && (
-        <div className="text-center py-8 text-white/60">
-          <svg className="w-12 h-12 mx-auto mb-3 text-white/30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
-          <p>No videos in queue</p>
-          <p className="text-xs text-white/40 mt-1">Add a video to get started</p>
-        </div>
-      )}
-
-      {personalQueue.length > 0 && (
-        <div>
-          <h3 className="text-xs font-black text-xynk-muted tracking-wider mb-3">YOUR QUEUE</h3>
+      <section aria-label="Your queue">
+          <h3 className="text-xs font-black text-xynk-muted tracking-wider mb-3">YOUR QUEUE · {personalQueue.length}</h3>
           <div className="space-y-2">
             {personalQueue.map((item, index) => (
               <QueueRow
@@ -48,8 +37,25 @@ export function QueuePanel() {
               />
             ))}
           </div>
-        </div>
-      )}
+          {personalQueue.length === 0 && <p className="text-xs text-white/50">Videos you choose for later appear here.</p>}
+      </section>
+
+      <section aria-label="Suggested videos">
+        <h3 className="text-xs font-black text-xynk-muted tracking-wider mb-3">SUGGESTED VIDEOS</h3>
+        {suggestions.length > 0 ? <div className="space-y-2">
+          {suggestions.slice(0, 8).map(video => <button key={video.videoId} type="button"
+            onClick={() => void addSuggestion(video)}
+            className="w-full flex items-center gap-3 rounded-xl p-2 text-left hover:bg-white/10 transition-colors"
+            aria-label={`Select suggested video ${video.title}`}>
+            <MediaPreview mediaId={video.videoId} provider={video.provider} thumbnailUrl={video.thumbnailUrl}
+              contentLabel={video.title} className="w-14 h-8 rounded flex-shrink-0" />
+            <span className="min-w-0 flex-1"><span className="block truncate text-sm text-white">{video.title}</span>
+              <span className="block truncate text-xs text-white/60">{video.channelTitle}</span></span>
+            <Plus className="w-4 h-4 text-xynk-lime flex-shrink-0" />
+          </button>)}
+        </div> : <p className="text-xs text-white/50">{watchState?.provider?.toUpperCase() === 'YOUTUBE'
+          ? 'Finding videos related to what is playing…' : 'Suggestions appear while watching YouTube.'}</p>}
+      </section>
 
       <button onClick={() => setShelfOpen(true)} className="btn-secondary w-full mt-4">
         <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>

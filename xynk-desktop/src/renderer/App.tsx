@@ -9,6 +9,21 @@ import { UserProfileScreen } from './components/profile/UserProfileScreen';
 import { MediaDiscoveryScreen } from './components/media-discovery/MediaDiscoveryScreen';
 import { WaveLoader } from './components/ui/WaveLoader';
 import { LogoMark } from './components/ui/LogoMark';
+import { Minus, Square, X } from 'lucide-react';
+
+function DesktopFrame({ children }: { children: React.ReactNode }) {
+  return <div className="desktop-shell">
+    <div className="desktop-titlebar">
+      <div className="desktop-titlebar-brand"><LogoMark size={17} /><span>XYNK</span></div>
+      <div className="desktop-window-actions">
+        <button aria-label="Minimize window" title="Minimize" onClick={() => void window.xynkDesktop.minimize()}><Minus size={15} /></button>
+        <button aria-label="Maximize window" title="Maximize or restore" onClick={() => void window.xynkDesktop.maximize()}><Square size={12} /></button>
+        <button className="desktop-window-close" aria-label="Close window" title="Close" onClick={() => void window.xynkDesktop.close()}><X size={16} /></button>
+      </div>
+    </div>
+    <div className="desktop-content">{children}</div>
+  </div>;
+}
 
 function LaunchScreen() {
   return (
@@ -34,10 +49,10 @@ export default function App() {
     initialize();
   }, [initialize]);
 
-  if (initializing) return <LaunchScreen />;
+  if (initializing) return <DesktopFrame><LaunchScreen /></DesktopFrame>;
 
   return (
-    <Routes>
+    <DesktopFrame><Routes>
       <Route path="/login" element={<LoginScreen />} />
       <Route
         path="/"
@@ -59,6 +74,6 @@ export default function App() {
         element={<MediaDiscoveryScreen />}
       />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </Routes></DesktopFrame>
   );
 }

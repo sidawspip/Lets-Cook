@@ -53,7 +53,10 @@ export function WatchRoomScreen() {
     setPanel,
     queue,
     roomQueue,
+    personalQueue,
     suggestions,
+    setSuggestions,
+    searchVideos,
     messages,
     muted,
     volume,
@@ -113,6 +116,27 @@ export function WatchRoomScreen() {
   const directHls = watchState?.provider?.toUpperCase() === 'DIRECT_HLS' || watchState?.sourceType?.toUpperCase() === 'DIRECT_HLS';
   const activeMicMembers = voice.members.filter(member => member.microphoneOn);
   const screenTrack = voice.screenTrack;
+
+  useEffect(() => {
+    const title = watchState?.title?.trim() || '';
+    if (!youtube || !title || /^(youtube video|video|now playing)$/i.test(title)) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const seed = title.replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
+      .replace(/\b(official|video|audio|lyrics?|lyrical|hd|4k|8k|full song)\b/gi, ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (!seed) { setSuggestions([]); return; }
+    const query = /\b(s\d{1,2}\s*e\d{1,3}|season\s*\d+|episode\s*\d+|ep\.?\s*\d+)\b/i.test(title)
+      ? `${seed} next episode`
+      : /\b(song|music|lyrics?|remix|lofi|album|feat\.?|ft\.?)\b/i.test(title) || title.includes(' - ')
+        ? `songs similar to ${seed}` : `${seed} related videos`;
+    void searchVideos(query).then(videos => {
+      if (!cancelled) setSuggestions(videos.filter(video => video.videoId !== watchState?.mediaId));
+    }).catch(() => { if (!cancelled) setSuggestions([]); });
+    return () => { cancelled = true; };
+  }, [watchState?.mediaId, watchState?.title, youtube]);
 
   useEffect(() => {
     if (!watchState?.mediaId) { setLiked(false); return; }
@@ -357,9 +381,9 @@ export function WatchRoomScreen() {
   const key = state ? `${state.provider}:${state.mediaId}:${state.sourceUrl ?? ''}` : null;
 
   return (
-    <div className="relative h-screen overflow-hidden bg-xynk-ink flex flex-col">
+    <div className="watch-room-shell relative h-screen overflow-hidden bg-xynk-ink flex flex-col">
       {/* Ambient backdrop */}
-      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-[#31204B] via-[#4B315D] to-[#101D2B]">
+      <div className="watch-room-ambient absolute inset-0 -z-10 bg-gradient-to-br from-[#31204B] via-[#4B315D] to-[#101D2B]">
         <div className="absolute -top-90 -right-90 w-[300px] h-[300px] rounded-full bg-[#66E33F9E] blur-[70px]" />
         <div className="absolute bottom-70 left-[-100px] w-[340px] h-[340px] rounded-full bg-[#661AA8D6] blur-[70px]" />
         <div className="absolute inset-0 bg-gradient-to-b from-[#12000000] to-[#B3050910]" />
@@ -367,7 +391,7 @@ export function WatchRoomScreen() {
 
       <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="px-2 py-2 flex items-center justify-between z-10 bg-black/50 backdrop-blur-sm border-b border-xynk-line">
+        <header className="watch-room-header px-2 py-2 flex items-center justify-between z-10 bg-black/50 backdrop-blur-sm border-b border-xynk-line">
           <button onClick={handleBack} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Back">
             <X className="w-7 h-7 text-white" />
           </button>
@@ -404,11 +428,11 @@ export function WatchRoomScreen() {
             {canControlWatch && <button onClick={() => setRoomSettingsOpen(true)} className="p-2 rounded-xl hover:bg-white/10" aria-label="Room controls"><Settings className="w-5 h-5 text-white"/></button>}
             {state && <button onClick={() => void toggleLike()} className="p-2 rounded-xl hover:bg-white/10" aria-label={liked ? 'Unlike video' : 'Like video'} title={liked ? 'Unlike video' : 'Like video'}><Heart className={`w-5 h-5 ${liked ? 'fill-xynk-coral text-xynk-coral' : 'text-white'}`}/></button>}
             {state && <button onClick={() => void voteSkip()} className="p-2 rounded-xl hover:bg-white/10" aria-label="Vote to skip" title="Vote to skip"><SkipForward className="w-5 h-5 text-white"/></button>}
-            <button onClick={() => setPanel('queue')} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Queue">
+            <button onClick={() => setPanel('queue')} className="relative p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Queue">
               <ListMusic className="w-5 h-5 text-white" />
-              {(roomQueue.length || queue.length) && (
+              {(roomQueue.length + personalQueue.length > 0) && (
                 <span className="absolute -top-1 -right-1 w-5 h-5 bg-xynk-coral rounded-full text-[9px] font-black flex items-center justify-center">
-                  {roomQueue.length + queue.length}
+                  {roomQueue.length + personalQueue.length}
                 </span>
               )}
             </button>
@@ -429,7 +453,7 @@ export function WatchRoomScreen() {
         {skipNotice && <div role="status" className="text-center text-xs text-white/80 bg-xynk-panelSoft py-1">{skipNotice}</div>}
 
         {/* Main content */}
-        <main className="flex-1 min-h-0 relative flex flex-col lg:flex-row overflow-hidden">
+        <main className="watch-room-main flex-1 min-h-0 relative flex flex-col lg:flex-row overflow-hidden">
           {checkingVideoAccess ? (
             <div className="flex items-center justify-center h-full">
               <WaveLoader label="Joining room" size={56} />
@@ -439,7 +463,7 @@ export function WatchRoomScreen() {
           ) : (
             <>
               {/* Video Player */}
-              <div className="relative w-full lg:flex-1 h-[min(28vh,360px)] lg:h-full min-h-0 flex items-center justify-center p-3 md:p-4">
+              <div className="watch-room-player-stage relative w-full lg:flex-1 h-[min(28vh,360px)] lg:h-full min-h-0 flex items-center justify-center p-3 md:p-4">
                 {(videoError || (!playerReady && state?.playing)) && (
                   <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/80 rounded-2xl">
                     {videoError ? (
@@ -497,6 +521,14 @@ export function WatchRoomScreen() {
                   selectedCaption={selectedCaption}
                 />
 
+                {state && <div className="watch-room-now-playing" aria-label={`Now playing ${_mediaTitle(state)}`}>
+                  <div className="watch-room-now-playing-copy">
+                    <span>NOW PLAYING · {_sourceLabel(state)}</span>
+                    <strong>{_mediaTitle(state)}</strong>
+                  </div>
+                  <span className="watch-room-viewers">{activeRoom.viewerCount} watching</span>
+                </div>}
+
                 {/* Caption */}
                 {/* Would render WebVTT captions here */}
               </div>
@@ -530,7 +562,7 @@ export function WatchRoomScreen() {
                 targetRoomId={activeRoom.id} onClose={() => setProviderVideo(null)} />}
 
               {roomSettingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" role="dialog" aria-label="Room controls">
-                <div className="w-full max-w-md rounded-2xl border border-xynk-line bg-xynk-panel p-5 text-white">
+                <div className="watch-room-settings w-full max-w-md rounded-2xl border border-xynk-line bg-xynk-panel p-5 text-white">
                   <div className="flex items-center justify-between mb-5"><h2 className="font-bold text-lg">Room controls</h2><button onClick={() => setRoomSettingsOpen(false)} aria-label="Close room controls"><X size={22}/></button></div>
                   <p className="text-xs font-bold text-xynk-mint mb-2">WHO CAN SET VIDEO</p>
                   {([['HOSTS_ONLY','Host only'], ['PERMISSION','Selected people'], ['VOTE',"Let's vote"]] as const).map(([mode,label]) => <button key={mode} onClick={() => void changeQueueMode(mode)} className={`w-full text-left p-3 rounded-xl mb-1 ${queueMode === mode ? 'bg-xynk-lime/20 text-xynk-lime' : 'hover:bg-white/10'}`}>{label}</button>)}
@@ -540,14 +572,14 @@ export function WatchRoomScreen() {
               </div>}
 
               {/* Bottom Panels */}
-              <div className="relative flex-1 lg:flex-none lg:w-[40%] max-w-[520px] h-[32vh] lg:h-full min-h-0 flex flex-col border-t lg:border-t-0 lg:border-l border-xynk-line bg-xynk-panel/75 backdrop-blur-xl">
+              <div className="watch-room-side-panel relative flex-1 lg:flex-none lg:w-[40%] max-w-[520px] h-[32vh] lg:h-full min-h-0 flex flex-col border-t lg:border-t-0 lg:border-l border-xynk-line bg-xynk-panel/75 backdrop-blur-xl">
                 {/* Tab bar */}
-                <div className="flex px-2 py-1 border-b border-xynk-line bg-black/30">
+                <div className="watch-room-tabbar flex px-2 py-1 border-b border-xynk-line bg-black/30">
                   {(['chat', 'queue', 'people'] as const).map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setPanel(tab)}
-                      className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl text-sm font-medium transition-colors ${
+                      className={`watch-room-tab flex-1 flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl text-sm font-medium transition-colors ${
                         panel === tab
                           ? 'bg-xynk-lime/20 text-xynk-lime'
                           : 'text-white/70 hover:text-white hover:bg-white/5'
@@ -557,9 +589,9 @@ export function WatchRoomScreen() {
                       {tab === 'queue' && <ListMusic className="w-4 h-4" />}
                       {tab === 'people' && <Users className="w-4 h-4" />}
                       <span className="hidden sm:inline">{tab.charAt(0).toUpperCase() + tab.slice(1)}</span>
-                      {tab === 'queue' && (roomQueue.length || queue.length) && (
+                      {tab === 'queue' && (roomQueue.length + personalQueue.length > 0) && (
                         <span className="w-5 h-5 bg-xynk-coral rounded-full text-[9px] font-black flex items-center justify-center">
-                          {roomQueue.length + queue.length}
+                          {roomQueue.length + personalQueue.length}
                         </span>
                       )}
                     </button>

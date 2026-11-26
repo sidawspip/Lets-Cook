@@ -75,6 +75,10 @@ windows_app/drm_companion/node_modules/
 /mobile/*.png
 /mobile/*.xml
 
+# Local design references and temporary UI review pages.
+/docs/ui-reference/
+/xynk-desktop/ui4-review.html
+
 # Local assistant settings and workspace state.
 /.claude/
 .kilo/

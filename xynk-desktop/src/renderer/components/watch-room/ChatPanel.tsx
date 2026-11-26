@@ -3,9 +3,16 @@ import { useWatchPartyStore } from '../../stores/watchPartyStore';
 import { _time } from '../../lib/formatters';
 import { MessageSquare, Reply, MoreHorizontal, Send, Mic, MicOff, Volume2, VolumeX, ScreenShare, Smile } from 'lucide-react';
 import { MediaPreview } from '../ui/MediaPreview';
+import { AnimatedEmoji, EmojiText, isEmojiOnly } from '../ui/AnimatedEmoji';
+import EmojiPicker, { Theme, type EmojiRenderProps } from 'emoji-picker-react';
 import type { ChatMessage, RoomWatchState } from '../../types/models';
 
 const REACTIONS = ['❤️', '🔥', '😂', '😍', '👏', '😮', '😢', '👍'];
+
+function AnimatedPickerCell({emoji,children,...props}:EmojiRenderProps){
+ return <button {...props}>{emoji.isCustom?children:<AnimatedEmoji emoji={emoji.emoji}/>}</button>;
+}
+const pickerComponents={Emoji:AnimatedPickerCell};
 
 export function ChatPanel({ messages, state, onOpenVideo }: {messages: ChatMessage[]; state: RoomWatchState | null; onOpenVideo?: (message: ChatMessage) => void}) {
   const { replyToMessage, beginReply, cancelReply, sendMessage, reactToMessage,
@@ -112,7 +119,7 @@ export function ChatPanel({ messages, state, onOpenVideo }: {messages: ChatMessa
                 onClick={() => handleAction(showActions.message, r)}
                 className="text-2xl p-1 hover:bg-white/10 rounded"
               >
-                {r}
+                <AnimatedEmoji emoji={r} />
               </button>
             ))}
           </div>
@@ -150,7 +157,7 @@ export function ChatPanel({ messages, state, onOpenVideo }: {messages: ChatMessa
       )}
 
       {/* Composer */}
-      <div className="p-3 bg-black/50 border-t border-xynk-line flex items-end gap-2">
+      <div className="relative p-3 bg-black/50 border-t border-xynk-line flex items-end gap-2">
         <div className="flex items-center gap-1">
           <button onClick={() => void toggleMicrophone()} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label={voice.microphoneEnabled ? 'Mute microphone' : 'Turn on microphone'}>
             {voice.microphoneEnabled ? <Mic className="w-5 h-5 text-xynk-lime" /> : <MicOff className="w-5 h-5 text-white" />}
@@ -158,8 +165,9 @@ export function ChatPanel({ messages, state, onOpenVideo }: {messages: ChatMessa
           <button onClick={() => void toggleSpeaker()} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label={voice.speakerEnabled ? 'Mute room voices' : 'Hear room voices'}>
             {voice.speakerEnabled ? <Volume2 className="w-5 h-5 text-xynk-lime" /> : <VolumeX className="w-5 h-5 text-white" />}
           </button>
-          <button className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Emoji">
-            <Smile className="w-5 h-5 text-white" onClick={() => setShowEmojis(!showEmojis)} />
+          <button type="button" onClick={() => setShowEmojis(value => !value)}
+            className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label="Emoji" aria-expanded={showEmojis}>
+            <Smile className="w-5 h-5 text-white" />
           </button>
           <button onClick={() => void handleScreenShare()} className="p-2 rounded-xl hover:bg-white/10 transition-colors" aria-label={voice.screenShareEnabled ? 'Stop screen share' : 'Share screen'}>
             <ScreenShare className={`w-5 h-5 ${voice.screenShareEnabled ? 'text-xynk-lime' : 'text-white'}`} />
@@ -182,16 +190,9 @@ export function ChatPanel({ messages, state, onOpenVideo }: {messages: ChatMessa
         />
 
         {showEmojis && (
-          <div className="absolute bottom-full left-12 right-12 mb-2 p-2 bg-xynk-panel rounded-2xl border border-xynk-line flex gap-1 overflow-x-auto">
-            {REACTIONS.map(r => (
-              <button
-                key={r}
-              onClick={() => { setShowEmojis(false); void handleSend(r); }}
-                className="text-2xl p-1 hover:bg-white/10 rounded"
-              >
-                {r}
-              </button>
-            ))}
+          <div className="absolute z-20 bottom-full left-3 right-3 mb-2 rounded-2xl border border-xynk-line shadow-xl overflow-hidden" aria-label="Choose an emoji">
+            <EmojiPicker theme={Theme.DARK} width="100%" height={330} components={pickerComponents}
+              onEmojiClick={({ emoji }) => { setShowEmojis(false); void handleSend(emoji); }} />
           </div>
         )}
 
@@ -239,13 +240,14 @@ function MessageBubble({ message, isMine, onReply, onReact, onActions, onOpenVid
         {!isMine && (
           <p className="text-xs font-medium text-xynk-mint mb-1">{message.senderName}</p>
         )}
-        <p className="whitespace-pre-wrap break-words">{message.body}</p>
+        <p className="whitespace-pre-wrap break-words">{isEmojiOnly(message.body)
+          ? <AnimatedEmoji emoji={message.body.trim()} large /> : <EmojiText text={message.body} />}</p>
         <div className="flex items-center gap-1 mt-1">
           <span className="text-[10px] text-white/50">{new Date(message.createdAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
           {message.reactions.length > 0 && (
             <span className="flex gap-1">
               {message.reactions.map((r: any) => (
-                <span key={r.reaction} className="text-xs">{r.reaction} {r.count}</span>
+                <span key={r.reaction} className="inline-flex items-center gap-0.5 text-xs"><AnimatedEmoji emoji={r.reaction} /> {r.count}</span>
               ))}
             </span>
           )}

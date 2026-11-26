@@ -1,0 +1,123 @@
+/* Reference showcase materials. All geometry remains full-viewport desktop. */
+.showcase-theme {
+  --showcase-edge:#ffb6ec; --showcase-glow:#f65bd5; --showcase-hot:#ffc7ad;
+  --showcase-tint:rgba(137,92,180,.16); --showcase-deep:rgba(27,23,61,.38);
+  --showcase-reflection:rgba(236,181,255,.23);
+  --glass-clear:rgba(12,14,40,.48);
+  --glass-frost:rgba(148,125,179,.12);
+  --glass-dense:rgba(32,25,64,.46);
+  --glass-control:rgba(195,157,225,.12);
+  --ui-specular:inset 0 1px 2px #ffffffa6,inset 0 -1px 1px #ffffff40;
+}
+.showcase-theme[data-theme='aurora-cyan'] {
+  --showcase-edge:#91faff; --showcase-glow:#00d7ff; --showcase-hot:#8effdd;
+  --showcase-tint:rgba(34,149,187,.15); --showcase-deep:rgba(4,33,57,.37);
+  --showcase-reflection:rgba(128,237,255,.22);
+  --glass-clear:rgba(3,19,37,.46);
+  --glass-frost:rgba(81,160,185,.11);
+  --glass-dense:rgba(6,38,63,.46);
+  --glass-control:rgba(124,224,237,.11);
+}
+.showcase-theme[data-theme='sunset-amber'] {
+  --showcase-edge:#ffc49a; --showcase-glow:#ff649c; --showcase-hot:#ffe1a1;
+  --showcase-tint:rgba(181,88,133,.16); --showcase-deep:rgba(49,24,56,.38);
+  --showcase-reflection:rgba(255,186,196,.23);
+  --glass-clear:rgba(29,14,35,.47);
+  --glass-frost:rgba(185,119,143,.12);
+  --glass-dense:rgba(60,25,53,.46);
+  --glass-control:rgba(243,173,183,.12);
+}
+.showcase-theme body {background:var(--ui-background);}
+.showcase-theme :is(.home-shell,.glass-dialog,.glass-drawer,.watch-panel,.login-card) {
+  position:relative;isolation:isolate;
+  background:
+    radial-gradient(ellipse 20% 18% at 0% 0%,var(--showcase-reflection),transparent 72%),
+    radial-gradient(ellipse 23% 24% at 100% 100%,var(--showcase-reflection),transparent 73%),
+    linear-gradient(145deg,#ffffff10,transparent 24%,#ffffff03 70%,#ffffff0c),var(--glass-clear);
+  backdrop-filter:blur(16px) saturate(145%);
+  box-shadow:inset 0 1px 1px #ffffffeb,inset 1px 0 1px #ffffff8c,inset -1px -1px 2px var(--showcase-hot),inset 0 0 12px color-mix(in srgb,var(--showcase-glow) 17%,transparent),inset 0 0 36px color-mix(in srgb,var(--showcase-glow) 8%,transparent),0 0 22px color-mix(in srgb,var(--showcase-glow) 25%,transparent);
+}
+.showcase-theme :is(.glass-dialog,.glass-drawer,.watch-panel) {
+ background:radial-gradient(ellipse 42% 35% at 0 0,var(--showcase-reflection),transparent 80%),linear-gradient(155deg,#ffffff10,transparent 35%,#ffffff03),var(--glass-dense);
+ backdrop-filter:blur(24px) saturate(155%);
+}
+.showcase-theme :is(.home-shell,.glass-dialog,.login-card) {border-radius:22px;}
+.showcase-theme :is(.home-shell,.glass-dialog,.login-card)::before {
+  content:'';position:absolute;inset:0;border-radius:inherit;padding:2px;pointer-events:none;z-index:3;
+  background:
+    radial-gradient(ellipse 110px 90px at 0 0,#fff9ef 8%,var(--showcase-edge) 42%,transparent 100%),
+    radial-gradient(ellipse 135px 110px at 100% 100%,#fff5df 8%,var(--showcase-hot) 42%,transparent 100%),
+    linear-gradient(130deg,var(--showcase-edge),#ffffff18 24%,#ffffff12 65%,var(--showcase-glow));
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);mask-composite:exclude;
+  filter:drop-shadow(0 0 3px color-mix(in srgb,var(--showcase-glow) 60%,transparent));
+}
+.showcase-theme :is(.home-shell,.glass-dialog,.login-card)::after {
+  content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-1;
+  background:
+    radial-gradient(ellipse 110px 85px at 1% 0%,#fff5efb3,var(--showcase-glow) 9%,transparent 76%),
+    radial-gradient(ellipse 135px 110px at 100% 100%,#fff5df99,var(--showcase-hot) 9%,transparent 76%),
+    radial-gradient(ellipse 70% 65% at 110% -35%,transparent 65%,#ffffff03 66%,#ffffff16 67%,#ffffff04 69%,transparent 73%),
+    radial-gradient(ellipse 65% 70% at -10% 137%,transparent 64%,#ffffff03 65%,var(--showcase-reflection) 66%,#ffffff04 68%,transparent 72%);
+  mask-image:radial-gradient(ellipse 45% 38% at 0 0,#000,transparent 85%),radial-gradient(ellipse 48% 42% at 100% 100%,#000,transparent 85%);
+}
+.showcase-theme :is(.room-card,.glass-surface:not(.login-card),.card,.sidebar-card,.glass-list-row,.queue-row,.theme-option) {
+  position:relative;isolation:isolate;
+  background:radial-gradient(ellipse at 0 0,#ffffff12,transparent 65%),linear-gradient(155deg,#ffffff14,#ffffff04 28%,transparent 62%,#ffffff09),var(--glass-frost);
+  border:1px solid color-mix(in srgb,var(--showcase-edge) 30%,transparent);
+  border-top-color:#ffffff73;border-radius:15px;
+  backdrop-filter:blur(16px) saturate(155%);
+  box-shadow:inset 0 1px 1px #ffffff8c,inset 0 -1px 0 #ffffff1a,inset 1px 0 2px #ffffff12,0 8px 22px #05031a45,0 0 14px color-mix(in srgb,var(--showcase-glow) 9%,transparent);
+}
+.showcase-theme .room-card::before {
+  content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(ellipse 95% 180% at 115% -105%,transparent 68%,color-mix(in srgb,var(--ui-iris) 18%,transparent) 69%,#ffffff03 73%,transparent 78%),linear-gradient(170deg,#ffffff0c,transparent 40%);
+}
+.showcase-theme .room-card::after {
+  content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:radial-gradient(ellipse 90px 60px at 0 0,#ffffffc9,var(--showcase-edge) 25%,transparent 100%),linear-gradient(130deg,#ffffff38,#ffffff03 28%,#ffffff03 76%,color-mix(in srgb,var(--showcase-glow) 38%,transparent));
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);mask-composite:exclude;
+}
+.showcase-theme :is(.input-field,.home-search,.friend-search,.chat-input,.ui4-field) {
+  background:linear-gradient(160deg,#ffffff18,#ffffff03 45%,#ffffff08),var(--glass-control);
+  border:1px solid #ffffff40;border-top-color:#ffffff80;border-radius:13px;
+  backdrop-filter:blur(12px) saturate(145%);
+  box-shadow:inset 0 1px 1px #ffffff66,inset 0 2px 6px #0b061624,inset 0 -1px 0 #ffffff1a,0 2px 6px #0000000d;
+}
+.showcase-theme :is(.btn-primary,.glass-primary,.home-create,.watch-tabs button[aria-pressed='true'],.ui4-tab[aria-pressed='true']) {
+  background:linear-gradient(175deg,#ffffff70,transparent 37%,#30053526 70%,#ffffff20),var(--ui-primary);
+  border:1px solid var(--showcase-edge);color:#21122c;border-radius:999px;
+  box-shadow:inset 0 1px 2px #ffffffc9,inset 0 -2px 4px #30002c3d,0 0 9px color-mix(in srgb,var(--showcase-glow) 70%,transparent),0 0 20px color-mix(in srgb,var(--showcase-glow) 35%,transparent);
+}
+.showcase-theme .btn-secondary {
+  background:linear-gradient(170deg,#ffffff24,transparent 50%,#ffffff0a),var(--showcase-tint);
+  border:1px solid #ffffff45;border-radius:999px;box-shadow:inset 0 1px 1px #ffffff60,0 2px 8px #0002;
+}
+.showcase-theme .search-action.icon-button {background:linear-gradient(160deg,#ff717e,#ff2546);border-color:#ffb0bb80;color:#fff;box-shadow:inset 0 1px 1px #ffffff70;}
+.showcase-theme .watch-tabs {background:#14102738;border:1px solid #ffffff4d;border-radius:999px;box-shadow:inset 0 1px 1px #ffffff40;}
+.showcase-theme .watch-tabs button {border-radius:999px;}
+.showcase-theme .watch-header {background:linear-gradient(120deg,#ffffff20,transparent 60%),var(--showcase-tint);box-shadow:inset 0 1px 0 #ffffff66;border-color:#ffffff26;}
+.showcase-theme .settings-row {border:0;background:transparent;box-shadow:none;}
+.showcase-theme .settings-dialog h3 {color:var(--showcase-edge);}
+.showcase-theme .settings-dialog .settings-row select {background:transparent;border-color:transparent;box-shadow:none;backdrop-filter:none;}
+.showcase-theme .settings-switch {width:40px;height:24px;background:#a4a0c140;border:1px solid #ffffff30;box-shadow:inset 0 1px 1px #ffffff60;}
+.showcase-theme .settings-row[aria-checked='true'] .settings-switch {background:var(--ui-primary);border-color:#ffffff66;box-shadow:inset 0 1px 1px #ffffffb3,0 0 8px color-mix(in srgb,var(--showcase-glow) 35%,transparent);}
+.showcase-theme .settings-switch::after {background:#eae3f4;box-shadow:inset 0 1px 1px #ffffff70,0 1px 3px #0005;}
+.showcase-theme [aria-checked='true'] .settings-switch::after {background:#30223d;}
+.showcase-theme [data-settings-section='ACCOUNT'] .bg-gradient-to-br {background:linear-gradient(150deg,#ffffff50,transparent 65%),var(--ui-primary);box-shadow:inset 0 1px 1px #ffffff99,0 0 12px color-mix(in srgb,var(--showcase-glow) 35%,transparent);}
+.showcase-theme .settings-info-row>div:first-child {background:linear-gradient(145deg,#ffffff29,#ffffff06),var(--showcase-tint);border:1px solid #ffffff33;box-shadow:inset 0 1px 0 #ffffff40;}
+.showcase-theme .room-thumbnail {background:linear-gradient(140deg,#ffffff12,#12132c66);}
+.showcase-theme .chat-bubble[data-own='true'] {background:linear-gradient(145deg,#ffffff20,#ffffff06),var(--showcase-tint);border-color:#ffffff4d;}
+.showcase-theme :is(.input-field,.home-search,.friend-search,.chat-input,.ui4-field):focus {
+ outline:none;border-color:var(--showcase-edge);
+ box-shadow:inset 0 1px 1px #ffffff70,0 0 0 2px color-mix(in srgb,var(--showcase-glow) 24%,transparent),0 0 12px color-mix(in srgb,var(--showcase-glow) 20%,transparent);
+}
+.showcase-theme button:focus-visible {outline:2px solid var(--showcase-edge);outline-offset:3px;}
+.showcase-theme button:disabled,
+.showcase-theme :is(.btn-primary,.glass-primary,.home-create,.watch-tabs button,.ui4-tab):disabled {opacity:.46;filter:saturate(.55);box-shadow:none;cursor:not-allowed;}
+.showcase-theme .friends-dialog .dialog-header {justify-content:flex-start;gap:12px;}
+.showcase-theme .friends-dialog .dialog-header h1 {flex:1;margin:0;text-align:left;}
+@media(hover:hover) {.showcase-theme :is(.room-card,.btn-primary,.btn-secondary,.glass-primary,.home-create):hover:not(:disabled) {border-color:var(--showcase-edge);filter:brightness(1.08);}}
+@media(prefers-reduced-transparency:reduce) {
+ .showcase-theme :is(.home-shell,.glass-dialog,.glass-drawer,.watch-panel,.login-card,.room-card,.glass-surface,.card,.sidebar-card,.input-field,.home-search,.friend-search,.chat-input){background:#242138;backdrop-filter:none;}
+ .showcase-theme :is(.home-shell,.glass-dialog,.login-card)::after{display:none;}
+}
